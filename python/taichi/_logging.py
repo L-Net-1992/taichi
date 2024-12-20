@@ -1,7 +1,7 @@
 import inspect
 import os
 
-from taichi._lib import core as ti_core
+from taichi._lib import core as ti_python_core
 
 
 def _get_logging(name):
@@ -14,15 +14,16 @@ def _get_logging(name):
     Returns:
         Callabe: The decorated function.
     """
+
     def logger(msg, *args, **kwargs):
         # Python inspection takes time (~0.1ms) so avoid it as much as possible
-        if ti_core.logging_effective(name):
+        if ti_python_core.logging_effective(name):
             msg_formatted = msg.format(*args, **kwargs)
-            func = getattr(ti_core, name)
+            func = getattr(ti_python_core, name)
             frame = inspect.currentframe().f_back
             file_name, lineno, func_name, _, _ = inspect.getframeinfo(frame)
             file_name = os.path.basename(file_name)
-            msg = f'[{file_name}:{func_name}@{lineno}] {msg_formatted}'
+            msg = f"[{file_name}:{func_name}@{lineno}] {msg_formatted}"
             func(msg)
 
     return logger
@@ -36,7 +37,7 @@ def set_logging_level(level):
     also be effective. For example if `level` is set to 'warn', then the levels below
     it, which are 'error' and 'critical' in this case, will also be effective.
 
-    See also https://docs.taichi.graphics/lang/articles/contribution/utilities#logging.
+    See also https://docs.taichi-lang.org/docs/developer_utilities#logging.
 
     Args:
         level (str): Logging level.
@@ -45,7 +46,7 @@ def set_logging_level(level):
 
         >>> set_logging_level('debug')
     """
-    ti_core.set_logging_level(level)
+    ti_python_core.set_logging_level(level)
 
 
 def is_logging_effective(level):
@@ -53,7 +54,7 @@ def is_logging_effective(level):
     All levels below current level will be effective.
     The default level is 'info'.
 
-    See also https://docs.taichi.graphics/lang/articles/contribution/utilities#logging.
+    See also https://docs.taichi-lang.org/docs/developer_utilities#logging.
 
     Args:
         level (str): The string represents logging level. \
@@ -72,37 +73,37 @@ def is_logging_effective(level):
         >>> print(ti.is_logging_effective("error"))     # True
         >>> print(ti.is_logging_effective("critical"))  # True
     """
-    return ti_core.logging_effective(level)
+    return ti_python_core.logging_effective(level)
 
 
 # ------------------------
 
-DEBUG = 'debug'
+DEBUG = "debug"
 """The `str` 'debug', used for the `debug` logging level.
 """
 # ------------------------
 
-TRACE = 'trace'
+TRACE = "trace"
 """The `str` 'trace', used for the `debug` logging level.
 """
 # ------------------------
 
-INFO = 'info'
+INFO = "info"
 """The `str` 'info', used for the `info` logging level.
 """
 # ------------------------
 
-WARN = 'warn'
+WARN = "warn"
 """The `str` 'warn', used for the `warn` logging level.
 """
 # ------------------------
 
-ERROR = 'error'
+ERROR = "error"
 """The `str` 'error', used for the `error` logging level.
 """
 # ------------------------
 
-CRITICAL = 'critical'
+CRITICAL = "critical"
 """The `str` 'critical', used for the `critical` logging level.
 """
 # ------------------------
@@ -117,6 +118,12 @@ error = _get_logging(ERROR)
 critical = _get_logging(CRITICAL)
 
 __all__ = [
-    'DEBUG', 'TRACE', 'INFO', 'WARN', 'ERROR', 'CRITICAL', 'set_logging_level',
-    'is_logging_effective'
+    "DEBUG",
+    "TRACE",
+    "INFO",
+    "WARN",
+    "ERROR",
+    "CRITICAL",
+    "set_logging_level",
+    "is_logging_effective",
 ]

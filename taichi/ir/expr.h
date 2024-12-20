@@ -3,13 +3,14 @@
 #include "taichi/util/str.h"
 #include "taichi/ir/type_utils.h"
 
-TLANG_NAMESPACE_BEGIN
+namespace taichi::lang {
 
 struct CompileConfig;
 class Expression;
 class Identifier;
 class ExprGroup;
 class SNode;
+class ASTBuilder;
 
 class Expr {
  public:
@@ -22,6 +23,8 @@ class Expr {
     atomic = false;
   }
 
+  explicit Expr(uint1 x);
+
   explicit Expr(int16 x);
 
   explicit Expr(int32 x);
@@ -32,7 +35,7 @@ class Expr {
 
   explicit Expr(float64 x);
 
-  Expr(std::shared_ptr<Expression> expr) : Expr() {
+  explicit Expr(std::shared_ptr<Expression> expr) : Expr() {
     this->expr = expr;
   }
 
@@ -53,6 +56,7 @@ class Expr {
     expr = o.expr;
   }
 
+  // NOLINTNEXTLINE(google-explicit-constructor)
   operator bool() const {
     return expr.get() != nullptr;
   }
@@ -81,36 +85,29 @@ class Expr {
   // std::variant<Expr, std::string> in FrontendPrintStmt.
   Expr &operator=(const Expr &o);
 
-  Expr operator[](const ExprGroup &indices) const;
-
-  std::string serialize() const;
-  void serialize(std::ostream &ss) const;
-
-  Expr operator!();
-
   template <typename T, typename... Args>
-  static Expr make(Args &&... args) {
+  static Expr make(Args &&...args) {
     return Expr(std::make_shared<T>(std::forward<Args>(args)...));
   }
 
-  Expr parent() const;
-
   SNode *snode() const;
 
-  void declare(DataType dt);
+  // debug info, contains traceback for type checking error message
+  void set_dbg_info(const DebugInfo &dbg_info);
 
-  // traceback for type checking error message
-  void set_tb(const std::string &tb);
+  const std::string &get_tb() const;
 
-  void set_grad(const Expr &o);
+  void set_adjoint(const Expr &o);
 
-  void set_attribute(const std::string &key, const std::string &value);
+  void set_dual(const Expr &o);
 
-  std::string get_attribute(const std::string &key) const;
+  void set_adjoint_checkbit(const Expr &o);
 
   DataType get_ret_type() const;
 
-  void type_check(CompileConfig *config);
+  DataType get_rvalue_type() const;
+
+  void type_check(const CompileConfig *config);
 };
 
 // Value cast
@@ -141,23 +138,19 @@ Expr expr_rand() {
   return taichi::lang::expr_rand(get_data_type<T>());
 }
 
-Expr snode_append(SNode *snode, const ExprGroup &indices, const Expr &val);
+Expr assume_range(const Expr &expr,
+                  const Expr &base,
+                  int low,
+                  int high,
+                  const DebugInfo &dbg_info = DebugInfo());
 
-Expr snode_append(const Expr &expr, const ExprGroup &indices, const Expr &val);
+Expr loop_unique(const Expr &input,
+                 const std::vector<SNode *> &covers,
+                 const DebugInfo &dbg_info = DebugInfo());
 
-Expr snode_is_active(SNode *snode, const ExprGroup &indices);
+Expr expr_field(Expr id_expr, DataType dt);
 
-Expr snode_length(SNode *snode, const ExprGroup &indices);
+Expr expr_matrix_field(const std::vector<Expr> &fields,
+                       const std::vector<int> &element_shape);
 
-Expr snode_get_addr(SNode *snode, const ExprGroup &indices);
-
-Expr snode_length(const Expr &expr, const ExprGroup &indices);
-
-Expr assume_range(const Expr &expr, const Expr &base, int low, int high);
-
-Expr loop_unique(const Expr &input, const std::vector<SNode *> &covers);
-
-Expr global_new(Expr id_expr, DataType dt);
-
-Expr global_new(DataType dt, std::string name = "");
-TLANG_NAMESPACE_END
+}  // namespace taichi::lang

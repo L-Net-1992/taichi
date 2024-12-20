@@ -13,9 +13,8 @@
 
 #include "taichi/common/core.h"
 #include "taichi/system/timer.h"
-#include "spdlog/fmt/bundled/color.h"
 
-TI_NAMESPACE_BEGIN
+namespace taichi {
 
 class ProfilerRecords;
 
@@ -23,7 +22,7 @@ class ProfilerRecords;
 // profiler instance
 class ScopedProfiler {
  public:
-  ScopedProfiler(std::string name, uint64 elements = -1);
+  explicit ScopedProfiler(std::string name, uint64 elements = -1);
 
   void stop();
 
@@ -57,4 +56,4 @@ class Profiling {
 
 #define TI_AUTO_PROF TI_PROFILER(__FUNCTION__)
 
-TI_NAMESPACE_END
+}  // namespace taichi

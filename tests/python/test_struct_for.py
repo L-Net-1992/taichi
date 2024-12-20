@@ -85,9 +85,7 @@ def test_nested2():
 
     n = 2048
 
-    ti.root.dense(ti.i, n // 512).dense(ti.i, 16).dense(ti.i,
-                                                        8).dense(ti.i,
-                                                                 4).place(x)
+    ti.root.dense(ti.i, n // 512).dense(ti.i, 16).dense(ti.i, 8).dense(ti.i, 4).place(x)
     ti.root.dense(ti.i, n).place(y)
 
     @ti.kernel
@@ -175,10 +173,7 @@ def test_nested_2d_more_nests():
 
     n = 64
 
-    ti.root.dense(ti.ij, n // 16).dense(ti.ij,
-                                        2).dense(ti.ij,
-                                                 4).dense(ti.ij,
-                                                          2).place(x, y)
+    ti.root.dense(ti.ij, n // 16).dense(ti.ij, 2).dense(ti.ij, 4).dense(ti.ij, 2).place(x, y)
 
     @ti.kernel
     def fill():
@@ -267,10 +262,12 @@ def test_struct_for_pointer_block():
 def test_struct_for_quant():
     n = 8
 
-    ci13 = ti.types.quantized_types.quant.int(13, True)
-    x = ti.field(dtype=ci13)
+    qi13 = ti.types.quant.int(13, True)
+    x = ti.field(dtype=qi13)
 
-    ti.root.dense(ti.i, n).bit_struct(num_bits=32).place(x)
+    bitpack = ti.BitpackedFields(max_num_bits=32)
+    bitpack.place(x)
+    ti.root.dense(ti.i, n).place(bitpack)
 
     @ti.kernel
     def count() -> int:
@@ -298,7 +295,8 @@ def test_struct_for_continue():
     def struct_for_continue() -> ti.i32:
         cnt = 0
         for i in x:
-            if x[i]: continue
+            if x[i]:
+                continue
             cnt += 1
         return cnt
 
@@ -306,7 +304,8 @@ def test_struct_for_continue():
     def range_for_continue() -> ti.i32:
         cnt = 0
         for i in range(n * n):
-            if x[i]: continue
+            if x[i]:
+                continue
             cnt += 1
         return cnt
 

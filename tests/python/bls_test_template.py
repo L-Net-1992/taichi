@@ -5,14 +5,7 @@ import numpy as np
 import taichi as ti
 
 
-def bls_test_template(dim,
-                      N,
-                      bs,
-                      stencil,
-                      block_dim=None,
-                      scatter=False,
-                      benchmark=0,
-                      dense=False):
+def bls_test_template(dim, N, bs, stencil, block_dim=None, scatter=False, benchmark=0, dense=False):
     x, y, y2 = ti.field(ti.i32), ti.field(ti.i32), ti.field(ti.i32)
 
     index = ti.axes(*range(dim))
@@ -39,7 +32,7 @@ def bls_test_template(dim,
         create_block().dense(index, bs).place(y)
         create_block().dense(index, bs).place(y2)
 
-    ndrange = ((bs[i], N - bs[i]) for i in range(dim))
+    ndrange = ((bs[i] * 2, N - bs[i] * 2) for i in range(dim))
 
     if block_dim is None:
         block_dim = 1
@@ -51,7 +44,7 @@ def bls_test_template(dim,
         for I in ti.grouped(ti.ndrange(*ndrange)):
             s = 0
             for i in ti.static(range(dim)):
-                s += I[i]**(i + 1)
+                s += I[i] ** (i + 1)
             x[I] = s
 
     @ti.kernel
@@ -61,7 +54,7 @@ def bls_test_template(dim,
         if ti.static(use_bls and scatter):
             ti.block_local(y)
 
-        ti.block_dim(block_dim)
+        ti.loop_config(block_dim=block_dim)
         for I in ti.grouped(x):
             if ti.static(scatter):
                 for offset in ti.static(stencil):
@@ -93,24 +86,26 @@ def bls_test_template(dim,
     def check():
         for I in ti.grouped(y2):
             if y[I] != y2[I]:
-                print('check failed', I, y[I], y2[I])
+                print("check failed", I, y[I], y2[I])
                 mismatch[None] = 1
 
     check()
 
-    ti.print_kernel_profile_info()
+    ti.profiler.print_kernel_profiler_info()
 
     assert mismatch[None] == 0
 
 
-def bls_particle_grid(N,
-                      ppc=8,
-                      block_size=16,
-                      scatter=True,
-                      benchmark=0,
-                      pointer_level=1,
-                      sort_points=True,
-                      use_offset=True):
+def bls_particle_grid(
+    N,
+    ppc=8,
+    block_size=16,
+    scatter=True,
+    benchmark=0,
+    pointer_level=1,
+    sort_points=True,
+    use_offset=True,
+):
     M = N * N * ppc
 
     m1 = ti.field(ti.f32)
@@ -135,7 +130,7 @@ def bls_particle_grid(N,
     elif pointer_level == 2:
         block = ti.root.pointer(ti.ij, N // block_size // 4).pointer(ti.ij, 4)
     else:
-        raise ValueError('pointer_level must be 1 or 2')
+        raise ValueError("pointer_level must be 1 or 2")
 
     if use_offset:
         grid_offset = (-N // 2, -N // 2)
@@ -150,34 +145,38 @@ def bls_particle_grid(N,
     block.dense(ti.ij, block_size).place(m2, offset=grid_offset)
     block.dense(ti.ij, block_size).place(m3, offset=grid_offset)
 
-    block.dynamic(ti.l,
-                  max_num_particles_per_block,
-                  chunk_size=block_size**2 * ppc * 4).place(
-                      pid, offset=grid_offset_block + (0, ))
+    block.dynamic(ti.l, max_num_particles_per_block, chunk_size=block_size**2 * ppc * 4).place(
+        pid, offset=grid_offset_block + (0,)
+    )
 
     bound = 0.1
 
     extend = 4
 
-    x_ = [(random.random() * (1 - 2 * bound) + bound + world_offset,
-           random.random() * (1 - 2 * bound) + bound + world_offset)
-          for _ in range(M)]
+    x_ = [
+        (
+            random.random() * (1 - 2 * bound) + bound + world_offset,
+            random.random() * (1 - 2 * bound) + bound + world_offset,
+        )
+        for _ in range(M)
+    ]
     if sort_points:
-        x_.sort(key=lambda q: int(q[0] * N) // block_size * N + int(q[1] * N)
-                // block_size)
+        x_.sort(key=lambda q: int(q[0] * N) // block_size * N + int(q[1] * N) // block_size)
 
     x.from_numpy(np.array(x_, dtype=np.float32))
 
     @ti.kernel
     def insert():
-        ti.block_dim(256)
+        ti.loop_config(block_dim=256)
         for i in x:
             # It is important to ensure insert and p2g uses the exact same way to compute the base
             # coordinates. Otherwise there might be coordinate mismatch due to float-point errors.
-            base = ti.Vector([
-                int(ti.floor(x[i][0] * N) - grid_offset[0]),
-                int(ti.floor(x[i][1] * N) - grid_offset[1])
-            ])
+            base = ti.Vector(
+                [
+                    int(ti.floor(x[i][0] * N) - grid_offset[0]),
+                    int(ti.floor(x[i][1] * N) - grid_offset[1]),
+                ]
+            )
             base_p = ti.rescale_index(m1, pid, base)
             ti.append(pid.parent(), base_p, i)
 
@@ -185,7 +184,7 @@ def bls_particle_grid(N,
 
     @ti.kernel
     def p2g(use_shared: ti.template(), m: ti.template()):
-        ti.block_dim(256)
+        ti.loop_config(block_dim=256)
         if ti.static(use_shared):
             ti.block_local(m)
         for I in ti.grouped(pid):
@@ -203,7 +202,7 @@ def bls_particle_grid(N,
 
     @ti.kernel
     def p2g_naive():
-        ti.block_dim(256)
+        ti.loop_config(block_dim=256)
         for p in x:
             u = ti.floor(x[p] * N).cast(ti.i32)
 
@@ -217,7 +216,7 @@ def bls_particle_grid(N,
 
     @ti.kernel
     def g2p(use_shared: ti.template(), s: ti.template()):
-        ti.block_dim(256)
+        ti.loop_config(block_dim=256)
         if ti.static(use_shared):
             ti.block_local(m1)
         for I in ti.grouped(pid):
@@ -240,7 +239,7 @@ def bls_particle_grid(N,
 
     @ti.kernel
     def g2p_naive(s: ti.template()):
-        ti.block_dim(256)
+        ti.loop_config(block_dim=256)
         for p in x:
             u = ti.floor(x[p] * N).cast(ti.i32)
 

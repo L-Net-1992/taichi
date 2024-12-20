@@ -2,23 +2,23 @@
 #include "taichi/ir/statements.h"
 #include "taichi/program/program.h"
 
-void aot_save() {
+void aot_save(taichi::Arch arch) {
   using namespace taichi;
   using namespace lang;
-  auto program = Program(Arch::vulkan);
 
-  program.config.advanced_optimization = false;
+  default_compile_config.advanced_optimization = false;
+  auto program = Program(arch);
 
   int n = 10;
 
   // program.materialize_runtime();
   auto *root = new SNode(0, SNodeType::root);
-  auto *pointer = &root->dense(Axis(0), n, false);
+  auto *pointer = &root->dense(Axis(0), n);
   auto *place = &pointer->insert_children(SNodeType::place);
   place->dt = PrimitiveType::i32;
   program.add_snode_tree(std::unique_ptr<SNode>(root), /*compile_only=*/true);
 
-  auto aot_builder = program.make_aot_module_builder(Arch::vulkan);
+  auto aot_builder = program.make_aot_module_builder(arch, {});
 
   std::unique_ptr<Kernel> kernel_init, kernel_ret;
 
@@ -68,11 +68,12 @@ void aot_save() {
 
     kernel_ret = std::make_unique<Kernel>(program, builder.extract_ir(), "ret");
     kernel_ret->insert_ret(PrimitiveType::i32);
+    kernel_ret->finalize_rets();
   }
 
   aot_builder->add_field("place", place, true, place->dt, {n}, 1, 1);
   aot_builder->add("init", kernel_init.get());
   aot_builder->add("ret", kernel_ret.get());
-  aot_builder->dump(".", "aot.tcb");
+  aot_builder->dump(".", taichi::arch_name(arch) + "_aot.tcb");
   std::cout << "done" << std::endl;
 }

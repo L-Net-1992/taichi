@@ -4,8 +4,7 @@
 #include "taichi/ir/statements.h"
 #include "taichi/util/testing.h"
 
-namespace taichi {
-namespace lang {
+namespace taichi::lang {
 
 namespace {
 class TestStmt : public Stmt {
@@ -56,7 +55,7 @@ TEST(StmtFieldManager, TestStmtFieldManager) {
 }
 
 TEST(StmtFieldManager, TestStmtFieldManagerWithVector) {
-  auto one = Stmt::make<ConstStmt>(LaneAttribute<TypedConstant>(1));
+  auto one = Stmt::make<ConstStmt>(TypedConstant(1));
   auto a = Stmt::make<TestStmtVector>(std::vector<Stmt *>(),
                                       std::vector<Stmt *>(1, one.get()));
 
@@ -74,5 +73,4 @@ TEST(StmtFieldManager, TestStmtFieldManagerWithVector) {
   EXPECT_EQ(a->field_manager.equal(c->field_manager), false);
 }
 
-}  // namespace lang
-}  // namespace taichi
+}  // namespace taichi::lang

@@ -1,32 +1,30 @@
 #include "extension.h"
-//#include "taichi/backends/opengl/opengl_api.h"
 
 #include <unordered_map>
 #include <unordered_set>
 
-TLANG_NAMESPACE_BEGIN
+namespace taichi::lang {
 
 bool is_extension_supported(Arch arch, Extension ext) {
   static std::unordered_map<Arch, std::unordered_set<Extension>> arch2ext = {
       {Arch::x64,
-       {Extension::sparse, Extension::async_mode, Extension::quant,
-        Extension::quant_basic, Extension::data64, Extension::adstack,
-        Extension::assertion, Extension::extfunc, Extension::packed,
-        Extension::dynamic_index, Extension::mesh}},
+       {Extension::sparse, Extension::quant, Extension::quant_basic,
+        Extension::data64, Extension::adstack, Extension::assertion,
+        Extension::extfunc, Extension::mesh}},
       {Arch::arm64,
-       {Extension::sparse, Extension::async_mode, Extension::quant,
-        Extension::quant_basic, Extension::data64, Extension::adstack,
-        Extension::assertion, Extension::packed, Extension::dynamic_index}},
+       {Extension::sparse, Extension::quant, Extension::quant_basic,
+        Extension::data64, Extension::adstack, Extension::assertion,
+        Extension::mesh}},
       {Arch::cuda,
-       {Extension::sparse, Extension::async_mode, Extension::quant,
-        Extension::quant_basic, Extension::data64, Extension::adstack,
-        Extension::bls, Extension::assertion, Extension::packed,
-        Extension::dynamic_index, Extension::mesh}},
-      // TODO: supporting quant & async in metal(tests randomly crashed)
-      {Arch::metal,
-       {Extension::adstack, Extension::assertion, Extension::sparse}},
+       {Extension::sparse, Extension::quant, Extension::quant_basic,
+        Extension::data64, Extension::adstack, Extension::bls,
+        Extension::assertion, Extension::mesh}},
+      {Arch::amdgpu, {Extension::assertion}},
+      {Arch::metal, {}},
       {Arch::opengl, {Extension::extfunc}},
-      {Arch::cc, {Extension::data64, Extension::extfunc, Extension::adstack}},
+      {Arch::gles, {}},
+      {Arch::vulkan, {}},
+      {Arch::dx11, {}},
   };
   // if (with_opengl_extension_data64())
   // arch2ext[Arch::opengl].insert(Extension::data64); // TODO: singleton
@@ -34,4 +32,4 @@ bool is_extension_supported(Arch arch, Extension ext) {
   return exts.find(ext) != exts.end();
 }
 
-TLANG_NAMESPACE_END
+}  // namespace taichi::lang

@@ -45,6 +45,7 @@ def test_numpy_loops():
         y[i] = i - 300
 
     import numpy as np
+
     begin = (np.ones(1) * (N // 2 + 3)).astype(np.int32).reshape(())
     end = (np.ones(1) * N).astype(np.int32).reshape(())
 
@@ -187,3 +188,19 @@ def test_break_in_outermost_for_not_in_outermost_scope():
         return a
 
     assert foo() == 100
+
+
+@test_utils.test()
+def test_cache_loop_invariant_global_var_in_nested_loops():
+    p = ti.field(float, 1)
+
+    @ti.kernel
+    def k():
+        for n in range(1):
+            for t in range(2):
+                for m in range(1):
+                    p[n] = p[n] + 1.0
+                p[n] = p[n] + 1.0
+
+    k()
+    assert p[0] == 4.0

@@ -4,28 +4,51 @@
 #include "llvm/IR/DataLayout.h"
 #endif
 
-TLANG_NAMESPACE_BEGIN
+namespace taichi::lang {
 
 #ifdef TI_WITH_LLVM
 std::unique_ptr<JITSession> create_llvm_jit_session_cpu(
-    LlvmProgramImpl *llvm_prog,
+    TaichiLLVMContext *tlctx,
+    const CompileConfig &config,
     Arch arch);
+
 std::unique_ptr<JITSession> create_llvm_jit_session_cuda(
-    LlvmProgramImpl *llvm_prog,
+    TaichiLLVMContext *tlctx,
+    const CompileConfig &config,
+    Arch arch);
+
+std::unique_ptr<JITSession> create_llvm_jit_session_amdgpu(
+    TaichiLLVMContext *tlctx,
+    const CompileConfig &config,
     Arch arch);
 #endif
 
-JITSession::JITSession(LlvmProgramImpl *llvm_prog) : llvm_prog_(llvm_prog) {
+JITSession::JITSession(TaichiLLVMContext *tlctx, const CompileConfig &config)
+    : tlctx_(tlctx), config_(config) {
 }
 
-std::unique_ptr<JITSession> JITSession::create(LlvmProgramImpl *llvm_prog,
+std::unique_ptr<JITSession> JITSession::create(TaichiLLVMContext *tlctx,
+                                               const CompileConfig &config,
                                                Arch arch) {
 #ifdef TI_WITH_LLVM
   if (arch_is_cpu(arch)) {
-    return create_llvm_jit_session_cpu(llvm_prog, arch);
+    return create_llvm_jit_session_cpu(tlctx, config, arch);
   } else if (arch == Arch::cuda) {
 #if defined(TI_WITH_CUDA)
-    return create_llvm_jit_session_cuda(llvm_prog, arch);
+    return create_llvm_jit_session_cuda(tlctx, config, arch);
+#else
+    TI_NOT_IMPLEMENTED
+#endif
+  } else if (arch == Arch::dx12) {
+#ifdef TI_WITH_DX12
+    // NOTE: there's no jit for dx12. Create cpu session to avoid crash.
+    return create_llvm_jit_session_cpu(tlctx, config, Arch::x64);
+#else
+    TI_NOT_IMPLEMENTED
+#endif
+  } else if (arch == Arch::amdgpu) {
+#ifdef TI_WITH_AMDGPU
+    return create_llvm_jit_session_amdgpu(tlctx, config, arch);
 #else
     TI_NOT_IMPLEMENTED
 #endif
@@ -36,4 +59,4 @@ std::unique_ptr<JITSession> JITSession::create(LlvmProgramImpl *llvm_prog,
   return nullptr;
 }
 
-TLANG_NAMESPACE_END
+}  // namespace taichi::lang

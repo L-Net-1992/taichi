@@ -1,10 +1,10 @@
 import taichi as ti
 
+ti.init()
+
 x = ti.field(ti.i32)
 l = ti.field(ti.i32)
 n = 16
-
-ti.init()
 
 ti.root.dense(ti.i, n).dynamic(ti.j, n).place(x)
 ti.root.dense(ti.i, n).place(l)
@@ -18,9 +18,14 @@ def make_lists():
         l[i] = ti.length(x.parent(), i)
 
 
-make_lists()
+def main():
+    make_lists()
 
-for i in range(n):
-    assert l[i] == i
-    for j in range(n):
-        assert x[i, j] == (j * j if j < i else 0)
+    for i in range(n):
+        assert l[i] == i
+        for j in range(n):
+            assert x[i, j] == (j * j if j < i else 0)
+
+
+if __name__ == "__main__":
+    main()

@@ -11,9 +11,9 @@
 #endif
 #endif
 
-#include "miniz.h"
+#include "taichi/common/miniz.h"
 
-TI_NAMESPACE_BEGIN
+namespace taichi {
 
 namespace zip {
 
@@ -112,4 +112,4 @@ std::vector<uint8> read(const std::string fn, bool verbose) {
 
 }  // namespace zip
 
-TI_NAMESPACE_END
+}  // namespace taichi

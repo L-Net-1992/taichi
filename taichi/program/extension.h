@@ -1,11 +1,10 @@
 #pragma once
 
-#include "taichi/backends/arch.h"
+#include "taichi/rhi/arch.h"
 
 #include <string>
 
-namespace taichi {
-namespace lang {
+namespace taichi::lang {
 
 // The Taichi core feature set (dense SNode) should probably be supported by all
 // the backends. In addition, each backend can optionally support features in
@@ -24,5 +23,4 @@ enum class Extension {
 
 bool is_extension_supported(Arch arch, Extension ext);
 
-}  // namespace lang
-}  // namespace taichi
+}  // namespace taichi::lang

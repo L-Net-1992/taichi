@@ -4,7 +4,7 @@
 #include "taichi/ir/visitors.h"
 #include "taichi/system/profiler.h"
 
-TLANG_NAMESPACE_BEGIN
+namespace taichi::lang {
 
 // Unconditionally eliminate ContinueStmt's at **ends** of loops
 class UselessContinueEliminator : public IRVisitor {
@@ -103,8 +103,8 @@ class UnreachableCodeEliminator : public BasicStmtVisitor {
   }
 
   void visit(IfStmt *if_stmt) override {
-    if (if_stmt->cond->is<ConstStmt>() && if_stmt->cond->width() == 1) {
-      if (if_stmt->cond->as<ConstStmt>()->val[0].equal_value(0)) {
+    if (if_stmt->cond->is<ConstStmt>()) {
+      if (if_stmt->cond->as<ConstStmt>()->val.equal_value(0)) {
         // if (0)
         if (if_stmt->false_statements) {
           modifier.insert_before(
@@ -156,4 +156,4 @@ bool unreachable_code_elimination(IRNode *root) {
 }
 }  // namespace irpass
 
-TLANG_NAMESPACE_END
+}  // namespace taichi::lang

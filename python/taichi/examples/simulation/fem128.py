@@ -7,7 +7,7 @@ dt = 5e-5
 dx = 1 / N
 rho = 4e1
 NF = 2 * N**2  # number of faces
-NV = (N + 1)**2  # number of vertices
+NV = (N + 1) ** 2  # number of vertices
 E, nu = 4e4, 0.2  # Young's modulus and Poisson's ratio
 mu, lam = E / 2 / (1 + nu), E * nu / (1 + nu) / (1 - 2 * nu)  # Lame parameters
 ball_pos, ball_radius = ti.Vector([0.5, 0.0]), 0.31
@@ -49,8 +49,7 @@ def update_U():
 def advance():
     for i in range(NV):
         acc = -pos.grad[i] / (rho * dx**2)
-        g = gravity[None] * 0.8 + attractor_strength[None] * (
-            attractor_pos[None] - pos[i]).normalized(1e-5)
+        g = gravity[None] * 0.8 + attractor_strength[None] * (attractor_pos[None] - pos[i]).normalized(1e-5)
         vel[i] += dt * (acc + g * 40)
         vel[i] *= ti.exp(-dt * damping)
     for i in range(NV):
@@ -59,11 +58,13 @@ def advance():
         disp2 = disp.norm_sqr()
         if disp2 <= ball_radius**2:
             NoV = vel[i].dot(disp)
-            if NoV < 0: vel[i] -= NoV * disp / disp2
+            if NoV < 0:
+                vel[i] -= NoV * disp / disp2
         cond = (pos[i] < 0) & (vel[i] < 0) | (pos[i] > 1) & (vel[i] > 0)
         # rect boundary condition:
         for j in ti.static(range(pos.n)):
-            if cond[j]: vel[i][j] = 0
+            if cond[j]:
+                vel[i][j] = 0
         pos[i] += dt * vel[i]
 
 
@@ -102,38 +103,42 @@ def paint_phi(gui):
     gui.triangles(a, b, c, color=ti.rgb_to_hex([k + gb, gb, gb]))
 
 
-init_mesh()
-init_pos()
-gravity[None] = [0, -1]
+def main():
+    init_mesh()
+    init_pos()
+    gravity[None] = [0, -1]
 
-gui = ti.GUI('FEM128')
-print(
-    "[Hint] Use WSAD/arrow keys to control gravity. Use left/right mouse bottons to attract/repel. Press R to reset."
-)
-while gui.running:
-    for e in gui.get_events(gui.PRESS):
-        if e.key == gui.ESCAPE:
-            gui.running = False
-        elif e.key == 'r':
-            init_pos()
-        elif e.key in ('a', gui.LEFT):
-            gravity[None] = [-1, 0]
-        elif e.key in ('d', gui.RIGHT):
-            gravity[None] = [+1, 0]
-        elif e.key in ('s', gui.DOWN):
-            gravity[None] = [0, -1]
-        elif e.key in ('w', gui.UP):
-            gravity[None] = [0, +1]
-    mouse_pos = gui.get_cursor_pos()
-    attractor_pos[None] = mouse_pos
-    attractor_strength[None] = gui.is_pressed(gui.LMB) - gui.is_pressed(
-        gui.RMB)
-    for i in range(50):
-        with ti.Tape(loss=U):
-            update_U()
-        advance()
-    paint_phi(gui)
-    gui.circle(mouse_pos, radius=15, color=0x336699)
-    gui.circle(ball_pos, radius=ball_radius * 512, color=0x666666)
-    gui.circles(pos.to_numpy(), radius=2, color=0xffaa33)
-    gui.show()
+    gui = ti.GUI("FEM128")
+    print(
+        "[Hint] Use WSAD/arrow keys to control gravity. Use left/right mouse buttons to attract/repel. Press R to reset."
+    )
+    while gui.running:
+        for e in gui.get_events(gui.PRESS):
+            if e.key == gui.ESCAPE:
+                gui.running = False
+            elif e.key == "r":
+                init_pos()
+            elif e.key in ("a", gui.LEFT):
+                gravity[None] = [-1, 0]
+            elif e.key in ("d", gui.RIGHT):
+                gravity[None] = [+1, 0]
+            elif e.key in ("s", gui.DOWN):
+                gravity[None] = [0, -1]
+            elif e.key in ("w", gui.UP):
+                gravity[None] = [0, +1]
+        mouse_pos = gui.get_cursor_pos()
+        attractor_pos[None] = mouse_pos
+        attractor_strength[None] = gui.is_pressed(gui.LMB) - gui.is_pressed(gui.RMB)
+        for i in range(50):
+            with ti.ad.Tape(loss=U):
+                update_U()
+            advance()
+        paint_phi(gui)
+        gui.circle(mouse_pos, radius=15, color=0x336699)
+        gui.circle(ball_pos, radius=ball_radius * 512, color=0x666666)
+        gui.circles(pos.to_numpy(), radius=2, color=0xFFAA33)
+        gui.show()
+
+
+if __name__ == "__main__":
+    main()

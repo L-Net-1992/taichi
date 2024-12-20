@@ -1,5 +1,7 @@
 import random
 
+import pytest
+
 import taichi as ti
 from tests import test_utils
 
@@ -21,8 +23,7 @@ class MPMSolver:
         voxel = block.dense(indices, 8)
 
         voxel.place(self.grid_m)
-        block.dynamic(ti.axes(dim), 1024 * 1024,
-                      chunk_size=4096).place(self.pid)
+        block.dynamic(ti.axes(dim), 1024 * 1024, chunk_size=4096).place(self.pid)
 
         ti.root.dynamic(ti.i, 2**25, 2**20).place(self.x)
         self.substeps = 0
@@ -44,20 +45,9 @@ class MPMSolver:
             self.build_pid()
 
 
-@test_utils.test(require=ti.extension.sparse,
-                 exclude=[ti.metal],
-                 device_memory_GB=1.0)
+@pytest.mark.run_in_serial
+@test_utils.test(require=ti.extension.sparse, exclude=[ti.metal], device_memory_GB=1.0)
 def test_mpm_particle_list_no_leakage():
-    # By default Taichi will allocate 0.5 GB for testing.
-    mpm = MPMSolver(res=(128, 128))
-    mpm.step()
-
-
-@test_utils.test(require=[ti.extension.sparse, ti.extension.packed],
-                 exclude=[ti.metal],
-                 device_memory_GB=1.0,
-                 packed=True)
-def test_mpm_particle_list_no_leakage_packed():
     # By default Taichi will allocate 0.5 GB for testing.
     mpm = MPMSolver(res=(128, 128))
     mpm.step()

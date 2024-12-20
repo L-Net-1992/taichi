@@ -1,19 +1,5 @@
 // Frontend statements
-PER_STATEMENT(FrontendExternalFuncStmt)
-PER_STATEMENT(FrontendExprStmt)
-PER_STATEMENT(FrontendIfStmt)
-PER_STATEMENT(FrontendForStmt)
-PER_STATEMENT(FrontendPrintStmt)
-PER_STATEMENT(FrontendWhileStmt)
-PER_STATEMENT(FrontendBreakStmt)
-PER_STATEMENT(FrontendContinueStmt)
-PER_STATEMENT(FrontendAllocaStmt)
-PER_STATEMENT(FrontendAssignStmt)
-PER_STATEMENT(FrontendEvalStmt)
-PER_STATEMENT(FrontendSNodeOpStmt)  // activate, deactivate, append, clear
-PER_STATEMENT(FrontendAssertStmt)
-PER_STATEMENT(FrontendFuncDefStmt)
-PER_STATEMENT(FrontendReturnStmt)
+#include "frontend_statements.inc.h"
 
 // Middle-end statement
 
@@ -29,11 +15,13 @@ PER_STATEMENT(WhileStmt)
 PER_STATEMENT(WhileControlStmt)
 PER_STATEMENT(ContinueStmt)
 PER_STATEMENT(FuncCallStmt)
+PER_STATEMENT(GetElementStmt)
 PER_STATEMENT(ReturnStmt)
 
 PER_STATEMENT(ArgLoadStmt)
+PER_STATEMENT(ReferenceStmt)
 PER_STATEMENT(ExternalPtrStmt)
-PER_STATEMENT(PtrOffsetStmt)
+PER_STATEMENT(MatrixPtrStmt)
 PER_STATEMENT(ConstStmt)
 PER_STATEMENT(AllocaStmt)
 PER_STATEMENT(UnaryOpStmt)
@@ -51,6 +39,8 @@ PER_STATEMENT(LoopUniqueStmt)
 PER_STATEMENT(AssertStmt)
 PER_STATEMENT(ExternalFuncCallStmt)
 PER_STATEMENT(ExternalTensorShapeAlongAxisStmt)
+PER_STATEMENT(ExternalTensorBasePtrStmt)
+PER_STATEMENT(MatrixInitStmt)
 
 // Locals with reverse-mode autodiff
 PER_STATEMENT(AdStackAllocaStmt)
@@ -63,7 +53,6 @@ PER_STATEMENT(AdStackAccAdjointStmt)
 // SNode Micro Ops
 PER_STATEMENT(GetRootStmt)
 PER_STATEMENT(IntegerOffsetStmt)
-PER_STATEMENT(BitExtractStmt)
 PER_STATEMENT(LinearizeStmt)
 PER_STATEMENT(SNodeLookupStmt)
 PER_STATEMENT(GetChStmt)
@@ -71,7 +60,8 @@ PER_STATEMENT(GetChStmt)
 // With per-lane attributes
 PER_STATEMENT(LocalLoadStmt)
 PER_STATEMENT(GlobalPtrStmt)
-PER_STATEMENT(ElementShuffleStmt)
+PER_STATEMENT(MatrixOfGlobalPtrStmt)
+PER_STATEMENT(MatrixOfMatrixPtrStmt)
 
 // Offloaded
 PER_STATEMENT(OffloadedStmt)
@@ -91,6 +81,9 @@ PER_STATEMENT(BlockLocalPtrStmt)
 
 // Special
 PER_STATEMENT(InternalFuncStmt)
+
+PER_STATEMENT(TexturePtrStmt)
+PER_STATEMENT(TextureOpStmt)
 
 // Quantization
 PER_STATEMENT(BitStructStoreStmt)

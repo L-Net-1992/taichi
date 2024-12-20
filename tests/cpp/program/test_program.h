@@ -4,12 +4,11 @@
 
 #include "taichi/program/program.h"
 
-namespace taichi {
-namespace lang {
+namespace taichi::lang {
 
 class TestProgram {
  public:
-  void setup();
+  void setup(Arch arch = Arch::x64);
 
   Program *prog() {
     return prog_.get();
@@ -19,5 +18,4 @@ class TestProgram {
   std::unique_ptr<Program> prog_{nullptr};
 };
 
-}  // namespace lang
-}  // namespace taichi
+}  // namespace taichi::lang

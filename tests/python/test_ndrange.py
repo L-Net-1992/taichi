@@ -63,7 +63,7 @@ def test_3d():
                     assert x[i, j, k] == 0
 
 
-@test_utils.test()
+@test_utils.test(exclude=ti.gles)
 def test_tensor_based_3d():
     x = ti.field(ti.i32, shape=(6, 6, 6))
     y = ti.field(ti.i32, shape=(6, 6, 6))
@@ -72,9 +72,7 @@ def test_tensor_based_3d():
     def func():
         lower = ti.Vector([0, 1, 2])
         upper = ti.Vector([3, 4, 5])
-        for I in ti.grouped(
-                ti.ndrange((lower[0], upper[0]), (lower[1], upper[1]),
-                           (lower[2], upper[2]))):
+        for I in ti.grouped(ti.ndrange((lower[0], upper[0]), (lower[1], upper[1]), (lower[2], upper[2]))):
             x[I] = I[0] + I[1] + I[2]
         for i in range(0, 3):
             for j in range(1, 4):
@@ -241,8 +239,102 @@ def test_ndrange_three_arguments():
             pass
 
     with pytest.raises(
-            ti.TaichiSyntaxError,
-            match=
-            r"Every argument of ndrange should be a scalar or a tuple/list like \(begin, end\)"
+        ti.TaichiSyntaxError,
+        match=r"Every argument of ndrange should be a scalar or a tuple/list like \(begin, end\)",
     ):
         foo()
+
+
+@test_utils.test()
+def test_ndrange_start_greater_than_end():
+    @ti.kernel
+    def ndrange_test(i1: ti.i32, i2: ti.i32, j1: ti.i32, j2: ti.i32) -> ti.i32:
+        n: ti.i32 = 0
+        for i, j in ti.ndrange((i1, i2), (j1, j2)):
+            n += 1
+        return n
+
+    assert ndrange_test(0, 10, 0, 20) == 200
+    assert ndrange_test(0, 10, 20, 0) == 0
+    assert ndrange_test(10, 0, 0, 20) == 0
+    assert ndrange_test(10, 0, 20, 0) == 0
+
+
+@test_utils.test()
+def test_ndrange_non_integer_arguments():
+    @ti.kernel
+    def example():
+        for i in ti.ndrange((1.1, 10.5)):
+            pass
+
+    with pytest.raises(
+        ti.TaichiTypeError,
+        match=r"Every argument of ndrange should be an integer scalar or a tuple/list of \(int, int\)",
+    ):
+        example()
+
+
+@test_utils.test()
+def test_ndrange_should_accept_numpy_integer():
+    a, b = np.int64(0), np.int32(10)
+
+    @ti.kernel
+    def example():
+        for i in ti.ndrange((a, b)):
+            pass
+
+    example()
+
+
+@test_utils.test()
+def test_static_ndrange_non_integer_arguments():
+    @ti.kernel
+    def example():
+        for i in ti.static(ti.ndrange(0.1, 0.2, 0.3)):
+            pass
+
+    with pytest.raises(
+        ti.TaichiTypeError,
+        match=r"Every argument of ndrange should be an integer scalar or a tuple/list of \(int, int\)",
+    ):
+        example()
+
+
+@test_utils.test()
+def test_static_ndrange_should_accept_numpy_integer():
+    a, b = np.int64(0), np.int32(10)
+
+    @ti.kernel
+    def example():
+        for i in ti.static(ti.ndrange((a, b))):
+            pass
+
+    example()
+
+
+@test_utils.test()
+def test_2d_loop_over_ndarray():
+    @ti.kernel
+    def foo(arr: ti.types.ndarray(dtype=ti.i32, ndim=1)):
+        M = arr.shape[0]
+        for i, j in ti.ndrange(M, M):
+            verts = ti.math.vec4(arr[i], arr[i + 1], arr[j], arr[j + 1])
+
+    array = ti.ndarray(ti.i32, shape=(16,))
+    foo(array)
+
+
+@test_utils.test()
+def test_dimension_error():
+    with pytest.raises(
+        ti.TaichiSyntaxError,
+        match="Ndrange for loop with number of the loop variables not equal to "
+        "the dimension of the ndrange is not supported",
+    ):
+
+        @ti.kernel
+        def func():
+            for i in ti.ndrange(4, 4):
+                pass
+
+        func()

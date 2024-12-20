@@ -34,13 +34,14 @@ def test_pointer_is_active():
 
     n = 128
 
-    ti.root.pointer(ti.i, n).dense(ti.i, n).place(x)
+    ptr = ti.root.pointer(ti.i, n)
+    ptr.dense(ti.i, n).place(x)
     ti.root.place(s)
 
     @ti.kernel
     def func():
         for i in range(n * n):
-            s[None] += ti.is_active(x.parent().parent(), i)
+            s[None] += ti.is_active(ptr, ti.rescale_index(x, ptr, [i]))
 
     x[0] = 1
     x[127] = 1
@@ -50,7 +51,31 @@ def test_pointer_is_active():
     assert s[None] == 256
 
 
-def _test_pointer2():
+@test_utils.test(require=ti.extension.sparse)
+def test_pointer_is_active_2():
+    x = ti.field(ti.f32)
+    s = ti.field(ti.i32)
+
+    n = 128
+
+    ti.root.dense(ti.i, n).pointer(ti.j, n).place(x)
+    ti.root.place(s)
+
+    @ti.kernel
+    def func():
+        for i, j in ti.ndrange(n, n):
+            s[None] += ti.is_active(x.parent(), [i, j])
+
+    x[0, 0] = 1
+    x[0, 127] = 1
+    x[127, 127] = 1
+
+    func()
+    assert s[None] == 3
+
+
+@test_utils.test(require=ti.extension.sparse)
+def test_pointer2():
     x = ti.field(ti.f32)
     s = ti.field(ti.i32)
 
@@ -79,18 +104,7 @@ def _test_pointer2():
     assert s[None] == 5 * n
 
 
-@test_utils.test(require=ti.extension.sparse)
-def test_pointer2():
-    _test_pointer2()
-
-
-@test_utils.test(require=[ti.extension.sparse, ti.extension.packed],
-                 packed=True)
-def test_pointer2_packed():
-    _test_pointer2()
-
-
-@pytest.mark.skip(reason='https://github.com/taichi-dev/taichi/issues/2520')
+@pytest.mark.skip(reason="https://github.com/taichi-dev/taichi/issues/2520")
 @test_utils.test(require=ti.extension.sparse)
 def test_pointer_direct_place():
     x, y = ti.field(ti.i32), ti.field(ti.i32)

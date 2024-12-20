@@ -36,13 +36,12 @@ runtimes/Release
 runtimes/Debug
 runtimes/RelWithDebInfo
 runtimes/*.png
-runtimes/taichi_core*
-runtimes/libtaichi_core*
+runtimes/taichi_python*
+runtimes/libtaichi_python*
 .pypirc
 dist/
 python/MANIFEST
-build/
-build_clang_tidy/
+build*/
 bin/
 tmp/
 cmake-build-*
@@ -58,6 +57,7 @@ __pycache__
 !docs/**/*.jpg
 !docs/**/*.png
 !tests/python/expected/*.png
+!python/taichi/examples/algorithm/circle-packing/*.png
 *.egg-info
 .tlang_cache
 /taichi/common/version.h
@@ -85,3 +85,8 @@ _build
 !docs/**/*.json
 imgui.ini
 /venv/
+/_skbuild/
+.cache
+.do-not-clean
+*.dylib
+*.ply

@@ -7,7 +7,7 @@
 
 #include <typeindex>
 
-TLANG_NAMESPACE_BEGIN
+namespace taichi::lang {
 
 // A helper class to maintain WholeKernelCSE::visited
 class MarkUndone : public BasicStmtVisitor {
@@ -97,6 +97,11 @@ class WholeKernelCSE : public BasicStmtVisitor {
       auto prev_ptr = prev_stmt->as<GlobalPtrStmt>();
       return irpass::analysis::definitely_same_address(this_ptr, prev_ptr) &&
              (this_ptr->activate == prev_ptr->activate || prev_ptr->activate);
+    }
+    if (this_stmt->is<ExternalPtrStmt>()) {
+      auto this_ptr = this_stmt->as<ExternalPtrStmt>();
+      auto prev_ptr = prev_stmt->as<ExternalPtrStmt>();
+      return irpass::analysis::definitely_same_address(this_ptr, prev_ptr);
     }
     if (this_stmt->is<LoopUniqueStmt>()) {
       auto this_loop_unique = this_stmt->as<LoopUniqueStmt>();
@@ -219,4 +224,4 @@ bool whole_kernel_cse(IRNode *root) {
 }
 }  // namespace irpass
 
-TLANG_NAMESPACE_END
+}  // namespace taichi::lang

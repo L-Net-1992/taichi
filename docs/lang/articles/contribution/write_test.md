@@ -1,8 +1,8 @@
 ---
-sidebar_position: 5
+sidebar_position: 4
 ---
 
-# Workflow for writing a Python test
+# Write a Python test
 
 Normally we write functional tests in Python.
 
@@ -13,7 +13,17 @@ Normally we write functional tests in Python.
 For example, you've just added a utility function `ti.log10`. Now you
 want to write a **test** to ensure that it functions properly.
 
-## Adding a new test case
+:::note
+
+Before running the test launcher `tests/run_tests.py`, you need to install the corresponding
+dependencies:
+```bash
+pip install -r requirements_test.txt
+```
+
+:::
+
+## Add a new test case
 
 Look into `tests/python`, see if there is already a file suitable for your
 test. If not, create a new file for it. In this case,
@@ -54,7 +64,7 @@ def test_log10():
 Execute `python tests/run_tests.py logarithm`, and the functions starting with `test_` in
 `tests/python/test_logarithm.py` will be executed.
 
-## Testing against multiple backends
+## Test against multiple backends
 
 The line `ti.init(arch=ti.cpu)` in the test above means that it will only test on the CPU backend. In order to test against multiple backends, please use the `@ti.test` decorator, as illustrated below:
 
@@ -97,7 +107,7 @@ def test_log10():
     assert r[None] == 2
 ```
 
-## Using `ti.approx` for comparison with tolerance
+## Use `ti.approx` for comparison with tolerance
 
 Sometimes the precision of math operations could be limited on certain backends such as OpenGL,
 e.g., `ti.log10(100)` may return `2.000001` or `1.999999` in this case.
@@ -204,7 +214,7 @@ def test_atan2(x, y):
     assert r[None] == math.atan2(x, y)
 ```
 
-## Specifying `ti.init` configurations
+## Specify `ti.init` configurations
 
 You may specify keyword arguments to `ti.init()` in `ti.test()`, e.g.:
 
@@ -244,7 +254,7 @@ def test_sparse_field():
     # ... (some tests that requires sparse feature which is not supported by OpenGL)
 ```
 
-## Requiring extension in tests
+## Require extension in tests
 
 If a test case depends on some extensions, you should add an argument `require` in the `@ti.test` decorator.
 
@@ -276,13 +286,10 @@ Now, Taichi supports the following extensions:
 | Name          | Extension details                                             |
 | ------------- | ------------------------------------------------------------- |
 | sparse        | Sparse data structures                                        |
-| async_mode    | Asynchronous execution mode                                   |
 | quant_basic   | Basic operations in quantization                              |
 | quant         | Full quantization functionalities                             |
-| data64        | 64-bit data and arithmetics                                   |
+| data64        | 64-bit data and arithmetic                                   |
 | adstack       | For keeping the history of mutable local variables in autodiff|
 | bls           | Block-local storage                                           |
 | assertion     | Run-time asserts in Taichi kernels                            |
 | extfunc       | Support inserting external function calls or backend source   |
-| packed        | Packed mode: shapes will not be padded to powers of two       |
-| dynamic_index | Dynamic index support for tensors                             |

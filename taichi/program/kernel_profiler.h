@@ -1,7 +1,7 @@
 #pragma once
 
-#include "taichi/backends/arch.h"
-#include "taichi/lang_util.h"
+#include "taichi/rhi/arch.h"
+#include "taichi/util/lang_util.h"
 
 #include <algorithm>
 #include <map>
@@ -10,7 +10,7 @@
 #include <memory>
 #include <regex>
 
-TLANG_NAMESPACE_BEGIN
+namespace taichi::lang {
 
 struct KernelProfileTracedRecord {
   // kernel attributes
@@ -33,7 +33,7 @@ struct KernelProfileStatisticalResult {
   double max;
   double total;
 
-  KernelProfileStatisticalResult(const std::string &name)
+  explicit KernelProfileStatisticalResult(const std::string &name)
       : name(name), counter(0), min(0), max(0), total(0) {
   }
 
@@ -60,6 +60,8 @@ class KernelProfilerBase {
   virtual void clear() = 0;
 
   virtual void sync() = 0;
+
+  virtual void update() = 0;
 
   virtual bool set_profiler_toolkit(std::string toolkit_name) {
     return false;
@@ -92,6 +94,8 @@ class KernelProfilerBase {
 
   double get_total_time() const;
 
+  void insert_record(const std::string &kernel_name, double duration_ms);
+
   virtual std::string get_device_name() {
     std::string str(" ");
     return str;
@@ -103,4 +107,4 @@ class KernelProfilerBase {
 
 std::unique_ptr<KernelProfilerBase> make_profiler(Arch arch, bool enable);
 
-TLANG_NAMESPACE_END
+}  // namespace taichi::lang

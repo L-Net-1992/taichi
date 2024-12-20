@@ -2,12 +2,11 @@
 name: Bug Report
 about: Create a report to help us improve
 title: ''
-labels: potential bug
 assignees: ''
 
 ---
 
-<!-- We've collected some common issue solutions in https://docs.taichi.graphics/lang/articles/misc/install. Make sure you've check them out first. Hopefully they could address your problem. -->
+<!-- We've collected some common issue solutions in https://docs.taichi-lang.org/docs/install. Make sure you've check them out first. Hopefully they could address your problem. -->
 
 **Describe the bug**
 A clear and concise description of what the bug is, ideally within 20 words.

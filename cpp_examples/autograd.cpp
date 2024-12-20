@@ -30,7 +30,7 @@ void autograd() {
           energy += c[i]
 
   init()
-  with ti.Tape(energy):
+  with ti.ad.Tape(energy):
       cal()
       support()
 
@@ -42,6 +42,7 @@ void autograd() {
   using namespace lang;
 
   auto program = Program(Arch::x64);
+  const auto &config = program.compile_config();
 
   int n = 10;
   program.materialize_runtime();
@@ -55,8 +56,17 @@ void autograd() {
       bool is_primal() const override {
         return true;
       }
-      SNode *grad_snode() const override {
+      SNodeGradType get_snode_grad_type() const override {
+        return SNodeGradType::kPrimal;
+      }
+      SNode *adjoint_snode() const override {
         return snode;
+      }
+      SNode *dual_snode() const override {
+        return snode;
+      }
+      SNode *adjoint_checkbit_snode() const override {
+        return nullptr;
       }
     };
     class GradInfoAdjoint final : public SNode::GradInfoProvider {
@@ -66,18 +76,26 @@ void autograd() {
       bool is_primal() const override {
         return false;
       }
-      SNode *grad_snode() const override {
+      SNodeGradType get_snode_grad_type() const override {
+        return SNodeGradType::kAdjoint;
+      }
+      SNode *adjoint_snode() const override {
+        return nullptr;
+      }
+      SNode *dual_snode() const override {
+        return nullptr;
+      }
+      SNode *adjoint_checkbit_snode() const override {
         return nullptr;
       }
     };
 
-    auto *snode =
-        &root->dense(Axis(0), n, false).insert_children(SNodeType::place);
+    auto *snode = &root->dense(Axis(0), n).insert_children(SNodeType::place);
     snode->dt = PrimitiveType::f32;
     snode->grad_info = std::make_unique<GradInfoPrimal>(
-        &root->dense(Axis(0), n, false).insert_children(SNodeType::place));
-    snode->get_grad()->dt = PrimitiveType::f32;
-    snode->get_grad()->grad_info = std::make_unique<GradInfoAdjoint>();
+        &root->dense(Axis(0), n).insert_children(SNodeType::place));
+    snode->get_adjoint()->dt = PrimitiveType::f32;
+    snode->get_adjoint()->grad_info = std::make_unique<GradInfoAdjoint>();
     return snode;
   };
   auto *a = get_snode_grad(), *b = get_snode_grad(), *c = get_snode_grad();
@@ -100,19 +118,19 @@ void autograd() {
                                   builder.create_add(i, one));
       builder.create_global_store(builder.create_global_ptr(c, {i}), zero);
 
-      builder.create_global_store(builder.create_global_ptr(a->get_grad(), {i}),
-                                  zero);
-      builder.create_global_store(builder.create_global_ptr(b->get_grad(), {i}),
-                                  zero);
-      builder.create_global_store(builder.create_global_ptr(c->get_grad(), {i}),
-                                  one);
+      builder.create_global_store(
+          builder.create_global_ptr(a->get_adjoint(), {i}), zero);
+      builder.create_global_store(
+          builder.create_global_ptr(b->get_adjoint(), {i}), zero);
+      builder.create_global_store(
+          builder.create_global_ptr(c->get_adjoint(), {i}), one);
     }
 
     kernel_init =
         std::make_unique<Kernel>(program, builder.extract_ir(), "init");
   }
 
-  auto get_kernel_cal = [&](bool grad) -> Kernel * {
+  auto get_kernel_cal = [&](AutodiffMode autodiff_mode) -> Kernel * {
     IRBuilder builder;
     auto *loop = builder.create_struct_for(a, 0, 4);
     {
@@ -126,10 +144,11 @@ void autograd() {
           std::make_unique<AtomicOpStmt>(AtomicOpType::add, c_i, val));
     }
 
-    return new Kernel(program, builder.extract_ir(), "cal", grad);
+    return new Kernel(program, builder.extract_ir(), "cal", autodiff_mode);
   };
-  kernel_forward = std::unique_ptr<Kernel>(get_kernel_cal(false));
-  kernel_backward = std::unique_ptr<Kernel>(get_kernel_cal(true));
+  kernel_forward = std::unique_ptr<Kernel>(get_kernel_cal(AutodiffMode::kNone));
+  kernel_backward =
+      std::unique_ptr<Kernel>(get_kernel_cal(AutodiffMode::kReverse));
 
   {
     IRBuilder builder;
@@ -139,27 +158,28 @@ void autograd() {
       auto *i = builder.get_loop_index(loop);
 
       auto *ext_a = builder.create_external_ptr(
-          builder.create_arg_load(0, PrimitiveType::f32, true), {i});
+          builder.create_arg_load({0}, PrimitiveType::f32, true, 0), {i});
       auto *a_grad_i = builder.create_global_load(
-          builder.create_global_ptr(a->get_grad(), {i}));
+          builder.create_global_ptr(a->get_adjoint(), {i}));
       builder.create_global_store(ext_a, a_grad_i);
 
       auto *ext_b = builder.create_external_ptr(
-          builder.create_arg_load(1, PrimitiveType::f32, true), {i});
+          builder.create_arg_load({1}, PrimitiveType::f32, true, 0), {i});
       auto *b_grad_i = builder.create_global_load(
-          builder.create_global_ptr(b->get_grad(), {i}));
+          builder.create_global_ptr(b->get_adjoint(), {i}));
       builder.create_global_store(ext_b, b_grad_i);
 
       auto *ext_c = builder.create_external_ptr(
-          builder.create_arg_load(2, PrimitiveType::f32, true), {i});
+          builder.create_arg_load({2}, PrimitiveType::f32, true, 0), {i});
       auto *c_i = builder.create_global_load(builder.create_global_ptr(c, {i}));
       builder.create_global_store(ext_c, c_i);
     }
 
     kernel_ext = std::make_unique<Kernel>(program, builder.extract_ir(), "ext");
-    kernel_ext->insert_arg(get_data_type<int>(), true);
-    kernel_ext->insert_arg(get_data_type<int>(), true);
-    kernel_ext->insert_arg(get_data_type<int>(), true);
+    kernel_ext->insert_arr_param(get_data_type<int>(), /*total_dim=*/1, {n});
+    kernel_ext->insert_arr_param(get_data_type<int>(), /*total_dim=*/1, {n});
+    kernel_ext->insert_arr_param(get_data_type<int>(), /*total_dim=*/1, {n});
+    kernel_ext->finalize_params();
   }
 
   auto ctx_init = kernel_init->make_launch_context();
@@ -167,17 +187,33 @@ void autograd() {
   auto ctx_backward = kernel_backward->make_launch_context();
   auto ctx_ext = kernel_ext->make_launch_context();
   std::vector<float> ext_a(n), ext_b(n), ext_c(n);
-  ctx_ext.set_arg_external_array(0, taichi::uint64(ext_a.data()), n,
-                                 /*is_device_allocation=*/false);
-  ctx_ext.set_arg_external_array(1, taichi::uint64(ext_b.data()), n,
-                                 /*is_device_allocation=*/false);
-  ctx_ext.set_arg_external_array(2, taichi::uint64(ext_c.data()), n,
-                                 /*is_device_allocation=*/false);
+  ctx_ext.set_arg_external_array_with_shape({0}, taichi::uint64(ext_a.data()),
+                                            n, {n});
+  ctx_ext.set_arg_external_array_with_shape({1}, taichi::uint64(ext_b.data()),
+                                            n, {n});
+  ctx_ext.set_arg_external_array_with_shape({2}, taichi::uint64(ext_c.data()),
+                                            n, {n});
 
-  (*kernel_init)(ctx_init);
-  (*kernel_forward)(ctx_forward);
-  (*kernel_backward)(ctx_backward);
-  (*kernel_ext)(ctx_ext);
+  {
+    const auto &compiled_kernel_data =
+        program.compile_kernel(config, program.get_device_caps(), *kernel_init);
+    program.launch_kernel(compiled_kernel_data, ctx_init);
+  }
+  {
+    const auto &compiled_kernel_data = program.compile_kernel(
+        config, program.get_device_caps(), *kernel_forward);
+    program.launch_kernel(compiled_kernel_data, ctx_forward);
+  }
+  {
+    const auto &compiled_kernel_data = program.compile_kernel(
+        config, program.get_device_caps(), *kernel_backward);
+    program.launch_kernel(compiled_kernel_data, ctx_backward);
+  }
+  {
+    const auto &compiled_kernel_data =
+        program.compile_kernel(config, program.get_device_caps(), *kernel_ext);
+    program.launch_kernel(compiled_kernel_data, ctx_ext);
+  }
   for (int i = 0; i < n; i++)
     std::cout << ext_a[i] << " ";
   std::cout << std::endl;

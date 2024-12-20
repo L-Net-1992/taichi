@@ -1,14 +1,12 @@
 #include "tests/cpp/program/test_program.h"
 
-namespace taichi {
-namespace lang {
+namespace taichi::lang {
 
-void TestProgram::setup() {
-  prog_ = std::make_unique<Program>(Arch::x64);
+void TestProgram::setup(Arch arch) {
+  prog_ = std::make_unique<Program>(arch);
   prog_->materialize_runtime();
   prog_->add_snode_tree(std::make_unique<SNode>(/*depth=*/0, SNodeType::root),
                         /*compile_only=*/false);
 }
 
-}  // namespace lang
-}  // namespace taichi
+}  // namespace taichi::lang

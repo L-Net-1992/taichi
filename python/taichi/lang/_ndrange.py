@@ -1,7 +1,12 @@
 import collections.abc
+from typing import Iterable
 
-from taichi.lang.exception import TaichiSyntaxError
-from taichi.lang.matrix import _IntermediateMatrix
+import numpy as np
+from taichi.lang import ops
+from taichi.lang.exception import TaichiSyntaxError, TaichiTypeError
+from taichi.lang.expr import Expr
+from taichi.lang.matrix import Matrix
+from taichi.types.utils import is_integral
 
 
 class _Ndrange:
@@ -14,6 +19,15 @@ class _Ndrange:
                 raise TaichiSyntaxError(
                     "Every argument of ndrange should be a scalar or a tuple/list like (begin, end)"
                 )
+            args[i] = (args[i][0], ops.max(args[i][0], args[i][1]))
+        for arg in args:
+            for bound in arg:
+                if not isinstance(bound, (int, np.integer)) and not (
+                    isinstance(bound, Expr) and is_integral(bound.ptr.get_rvalue_type())
+                ):
+                    raise TaichiTypeError(
+                        "Every argument of ndrange should be an integer scalar or a tuple/list of (int, int)"
+                    )
         self.bounds = args
 
         self.dimensions = [None] * len(args)
@@ -22,10 +36,8 @@ class _Ndrange:
 
         self.acc_dimensions = self.dimensions.copy()
         for i in reversed(range(len(self.bounds) - 1)):
-            self.acc_dimensions[
-                i] = self.acc_dimensions[i] * self.acc_dimensions[i + 1]
-        if len(self.acc_dimensions
-               ) == 0:  # for the empty case, e.g. ti.ndrange()
+            self.acc_dimensions[i] = self.acc_dimensions[i] * self.acc_dimensions[i + 1]
+        if len(self.acc_dimensions) == 0:  # for the empty case, e.g. ti.ndrange()
             self.acc_dimensions = [1]
 
     def __iter__(self):
@@ -34,7 +46,7 @@ class _Ndrange:
                 yield prefix
             else:
                 for t in range(self.bounds[d][0], self.bounds[d][1]):
-                    yield from gen(d + 1, prefix + (t, ))
+                    yield from gen(d + 1, prefix + (t,))
 
         yield from gen(0, ())
 
@@ -42,7 +54,7 @@ class _Ndrange:
         return GroupedNDRange(self)
 
 
-def ndrange(*args):
+def ndrange(*args) -> Iterable:
     """Return an immutable iterator object for looping over multi-dimensional indices.
 
     This returned set of multi-dimensional indices is the direct product (in the set-theory sense)
@@ -51,7 +63,7 @@ def ndrange(*args):
     range(x1, y1) x range(x2, y2) x ... x range(xn, yn)
 
     The k-th argument corresponds to the k-th `range()` factor in the above product, and each
-    argument must be an integer or a pair of two integers. An integer argument n will be intepreted
+    argument must be an integer or a pair of two integers. An integer argument n will be interpreted
     as `range(0, n)`, and a pair of two integers (start, end) will be interpreted as `range(start, end)`.
 
     You can loop over these multi-dimensonal indices in different ways, see the examples below.
@@ -131,7 +143,7 @@ class GroupedNDRange:
 
     def __iter__(self):
         for ind in self.r:
-            yield _IntermediateMatrix(len(ind), 1, list(ind))
+            yield Matrix(list(ind))
 
 
-__all__ = ['ndrange']
+__all__ = ["ndrange"]

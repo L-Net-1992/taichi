@@ -17,14 +17,14 @@ def test_cpu_debug_snode_reader():
 def test_cpu_debug_snode_writer_out_of_bound():
     x = ti.field(ti.f32, shape=3)
 
-    with pytest.raises(RuntimeError):
+    with pytest.raises(AssertionError):
         x[3] = 10.0
 
 
 @test_utils.test(require=ti.extension.assertion, debug=True, gdb_trigger=False)
 def test_cpu_debug_snode_writer_out_of_bound_negative():
     x = ti.field(ti.f32, shape=3)
-    with pytest.raises(RuntimeError):
+    with pytest.raises(AssertionError):
         x[-1] = 10.0
 
 
@@ -32,14 +32,14 @@ def test_cpu_debug_snode_writer_out_of_bound_negative():
 def test_cpu_debug_snode_reader_out_of_bound():
     x = ti.field(ti.f32, shape=3)
 
-    with pytest.raises(RuntimeError):
+    with pytest.raises(AssertionError):
         a = x[3]
 
 
 @test_utils.test(require=ti.extension.assertion, debug=True, gdb_trigger=False)
 def test_cpu_debug_snode_reader_out_of_bound_negative():
     x = ti.field(ti.f32, shape=3)
-    with pytest.raises(RuntimeError):
+    with pytest.raises(AssertionError):
         a = x[-1]
 
 
@@ -66,7 +66,12 @@ def test_not_out_of_bound():
     func()
 
 
-@test_utils.test(require=ti.extension.assertion, debug=True, gdb_trigger=False)
+@test_utils.test(
+    require=[ti.extension.sparse, ti.extension.assertion],
+    debug=True,
+    gdb_trigger=False,
+    exclude=ti.metal,
+)
 def test_out_of_bound_dynamic():
     x = ti.field(ti.i32)
 
@@ -80,7 +85,12 @@ def test_out_of_bound_dynamic():
         func()
 
 
-@test_utils.test(require=ti.extension.assertion, debug=True, gdb_trigger=False)
+@test_utils.test(
+    require=[ti.extension.sparse, ti.extension.assertion],
+    debug=True,
+    gdb_trigger=False,
+    exclude=ti.metal,
+)
 def test_not_out_of_bound_dynamic():
     x = ti.field(ti.i32)
 

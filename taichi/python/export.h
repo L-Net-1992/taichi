@@ -21,9 +21,11 @@
 
 #include "taichi/common/core.h"
 
-TI_NAMESPACE_BEGIN
+namespace taichi {
 
 namespace py = pybind11;
+
+using py::literals::operator""_a;
 
 void export_lang(py::module &m);
 
@@ -35,4 +37,4 @@ void export_visual(py::module &m);
 
 void export_ggui(py::module &m);
 
-TI_NAMESPACE_END
+}  // namespace taichi

@@ -3,14 +3,13 @@
 #include "taichi/ir/ir.h"
 #include "taichi/ir/statements.h"
 
-namespace taichi {
-namespace lang {
+namespace taichi::lang {
 namespace {
 
 std::unique_ptr<ConstStmt> make_const_i32(int32_t value) {
-  return Stmt::make_typed<ConstStmt>(LaneAttribute<TypedConstant>(TypedConstant(
+  return Stmt::make_typed<ConstStmt>(TypedConstant(
       TypeFactory::get_instance().get_primitive_type(PrimitiveTypeID::i32),
-      value)));
+      value));
 }
 
 TEST(Block, Erase) {
@@ -43,5 +42,4 @@ TEST(Block, EraseRange) {
 }
 
 }  // namespace
-}  // namespace lang
-}  // namespace taichi
+}  // namespace taichi::lang

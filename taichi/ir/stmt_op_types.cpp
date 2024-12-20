@@ -2,8 +2,7 @@
 
 #include "taichi/common/logging.h"
 
-namespace taichi {
-namespace lang {
+namespace taichi::lang {
 std::string unary_op_type_name(UnaryOpType type) {
   switch (type) {
 #define PER_UNARY_OP(i) \
@@ -56,6 +55,8 @@ std::string binary_op_type_symbol(BinaryOpType type) {
     REGISTER_TYPE(cmp_eq, ==);
     REGISTER_TYPE(bit_and, &);
     REGISTER_TYPE(bit_or, |);
+    REGISTER_TYPE(logical_and, &&);
+    REGISTER_TYPE(logical_or, ||);
     REGISTER_TYPE(bit_xor, ^);
     REGISTER_TYPE(pow, pow);
     REGISTER_TYPE(bit_shl, <<);
@@ -75,6 +76,7 @@ std::string ternary_type_name(TernaryOpType type) {
     return #i;
 
     REGISTER_TYPE(select);
+    REGISTER_TYPE(ifte);
 
 #undef REGISTER_TYPE
     default:
@@ -89,6 +91,7 @@ std::string atomic_op_type_name(AtomicOpType type) {
     return #i;
 
     REGISTER_TYPE(add);
+    REGISTER_TYPE(mul);
     REGISTER_TYPE(sub);
     REGISTER_TYPE(max);
     REGISTER_TYPE(min);
@@ -134,6 +137,7 @@ std::string snode_op_type_name(SNodeOpType type) {
     REGISTER_TYPE(activate);
     REGISTER_TYPE(deactivate);
     REGISTER_TYPE(append);
+    REGISTER_TYPE(allocate);
     REGISTER_TYPE(clear);
     REGISTER_TYPE(undefined);
 
@@ -143,5 +147,22 @@ std::string snode_op_type_name(SNodeOpType type) {
   }
 }
 
-}  // namespace lang
-}  // namespace taichi
+std::string texture_op_type_name(TextureOpType type) {
+  switch (type) {
+#define REGISTER_TYPE(i) \
+  case TextureOpType::i: \
+    return #i;
+
+    REGISTER_TYPE(kUndefined);
+    REGISTER_TYPE(kSampleLod);
+    REGISTER_TYPE(kFetchTexel);
+    REGISTER_TYPE(kLoad);
+    REGISTER_TYPE(kStore);
+
+#undef REGISTER_TYPE
+    default:
+      TI_NOT_IMPLEMENTED
+  }
+}
+
+}  // namespace taichi::lang

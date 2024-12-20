@@ -6,7 +6,7 @@
 
 #include <set>
 
-TLANG_NAMESPACE_BEGIN
+namespace taichi::lang {
 
 namespace irpass {
 
@@ -70,7 +70,7 @@ void reverse_segments(IRNode *root) {
         "Mixed usage of for-loops and statements without looping. \n"
         "Please split them into two kernels "
         "and check the documentation for more details:\n"
-        "https://docs.taichi.graphics/lang/articles/advanced/"
+        "https://docs.taichi-lang.org/docs/"
         "differentiable_programming");
   }
   for (auto &sblock : statement_blocks) {
@@ -82,4 +82,4 @@ void reverse_segments(IRNode *root) {
 
 }  // namespace irpass
 
-TLANG_NAMESPACE_END
+}  // namespace taichi::lang

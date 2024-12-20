@@ -27,9 +27,7 @@ def test_primitives():
 
     assert n1._offset_bytes_in_parent_cell == 0
     assert n2._offset_bytes_in_parent_cell == 2 * 32
-    assert n3._offset_bytes_in_parent_cell in [
-        2 * 32 + 12 * 32, 2 * 32 + 16 * 32
-    ]
+    assert n3._offset_bytes_in_parent_cell in [2 * 32 + 12 * 32, 2 * 32 + 16 * 32]
 
     assert x.snode._offset_bytes_in_parent_cell == 0
     assert y.snode._offset_bytes_in_parent_cell == 0
@@ -40,18 +38,20 @@ def test_primitives():
 
 
 @test_utils.test(arch=ti.cpu)
-def test_bit_struct():
-    cit = ti.types.quantized_types.quant.int(16, False)
-    x = ti.field(dtype=cit)
-    y = ti.field(dtype=ti.types.quantized_types.type_factory.custom_float(
-        significand_type=cit))
+def test_bitpacked_fields():
+    x = ti.field(dtype=ti.types.quant.int(16, False))
+    y = ti.field(dtype=ti.types.quant.fixed(16, False))
     z = ti.field(dtype=ti.f32)
 
     n1 = ti.root.dense(ti.i, 32)
-    n1.bit_struct(num_bits=32).place(x)
+    bitpack = ti.BitpackedFields(max_num_bits=32)
+    bitpack.place(x)
+    n1.place(bitpack)
 
     n2 = ti.root.dense(ti.i, 4)
-    n2.bit_struct(num_bits=32).place(y)
+    bitpack = ti.BitpackedFields(max_num_bits=32)
+    bitpack.place(y)
+    n2.place(bitpack)
     n2.place(z)
 
     assert n1._cell_size_bytes == 4

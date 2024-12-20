@@ -1,8 +1,10 @@
 #pragma once
 
-#include "taichi/system/virtual_memory.h"
+#include <string>
+#include <fstream>
+#include "taichi/common/core.h"
 
-TI_NAMESPACE_BEGIN
+namespace taichi {
 
 class MemoryMonitor {
   // avoid including py::dict
@@ -21,4 +23,7 @@ void start_memory_monitoring(std::string output_fn,
                              int pid = -1,
                              real interval = 1);
 
-TI_NAMESPACE_END
+float64 get_memory_usage_gb(int pid = -1);
+uint64 get_memory_usage(int pid = -1);
+
+}  // namespace taichi

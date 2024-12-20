@@ -5,17 +5,17 @@
 #include "taichi/transforms/demote_mesh_statements.h"
 #include "taichi/ir/visitors.h"
 
-namespace taichi {
-namespace lang {
+namespace taichi::lang {
 
 const PassID DemoteMeshStatements::id = "DemoteMeshStatements";
 
 namespace irpass {
 
 auto get_load = [](SNode *snode, Stmt *idx, VecStatement &block) {
-  const auto lane = std::vector<Stmt *>{idx};
-  Stmt *globalptr =
-      block.push_back<GlobalPtrStmt>(LaneAttribute<SNode *>{snode}, lane);
+  Stmt *casted_idx = block.push_back<UnaryOpStmt>(UnaryOpType::cast_value, idx);
+  casted_idx->as<UnaryOpStmt>()->cast_type = PrimitiveType::i32;
+  const auto lane = std::vector<Stmt *>{casted_idx};
+  Stmt *globalptr = block.push_back<GlobalPtrStmt>(snode, lane);
   Stmt *load = block.push_back<GlobalLoadStmt>(globalptr);
   return load;
 };
@@ -24,7 +24,7 @@ class ReplaceIndexConversion : public BasicStmtVisitor {
  public:
   using BasicStmtVisitor::visit;
 
-  ReplaceIndexConversion(OffloadedStmt *node) {
+  explicit ReplaceIndexConversion(OffloadedStmt *node) {
     allow_undefined_visitor = true;
     invoke_default_visitor = true;
 
@@ -38,16 +38,20 @@ class ReplaceIndexConversion : public BasicStmtVisitor {
                           ->second);
 
     VecStatement block;
+    Stmt *val;
     if (stmt->conv_type == mesh::ConvType::g2r) {
       // E.g, v_reordered = v_g2r[v_global]
-      Stmt *val = get_load(mapping, stmt->idx, block);
+      val = get_load(mapping, stmt->idx, block);
     } else {
       // E.g, v_global = v_l2g[v_local + total_vertices_offset]
       Stmt *offset = offload->total_offset_local.find(stmt->idx_type)->second;
       Stmt *index =
           block.push_back<BinaryOpStmt>(BinaryOpType::add, stmt->idx, offset);
-      [[maybe_unused]] Stmt *val = get_load(mapping, index, block);
+      val = get_load(mapping, index, block);
     }
+    Stmt *casted_val =
+        block.push_back<UnaryOpStmt>(UnaryOpType::cast_value, val);
+    casted_val->as<UnaryOpStmt>()->cast_type = PrimitiveType::i32;
     stmt->replace_with(std::move(block));
   }
 
@@ -78,19 +82,19 @@ void demote_mesh_statements_offload(OffloadedStmt *offload,
         mesh::relation_by_orders(from_order, to_order);
     if (from_order > to_order) {  // high-to-low relation
       if (stmt->is_size()) {
-        stmt->replace_with(Stmt::make<ConstStmt>(LaneAttribute<TypedConstant>{
-            from_type == mesh::MeshElementType::Cell &&
-                    stmt->to_type == mesh::MeshElementType::Edge
-                ? /*Cell-Edge=*/6
-                : (from_order + 1)}));
+        stmt->replace_with(Stmt::make<ConstStmt>(
+            TypedConstant{from_type == mesh::MeshElementType::Cell &&
+                                  stmt->to_type == mesh::MeshElementType::Edge
+                              ? /*Cell-Edge=*/6
+                              : (from_order + 1)}));
       } else {
         SNode *rel_value = stmt->mesh->relations.find(rel_type)->second.value;
         VecStatement block;
-        Stmt *to_size = block.push_back<ConstStmt>(LaneAttribute<TypedConstant>{
-            from_type == mesh::MeshElementType::Cell &&
-                    stmt->to_type == mesh::MeshElementType::Edge
-                ? /*Cell-Edge=*/6
-                : (from_order + 1)});
+        Stmt *to_size = block.push_back<ConstStmt>(
+            TypedConstant{from_type == mesh::MeshElementType::Cell &&
+                                  stmt->to_type == mesh::MeshElementType::Edge
+                              ? /*Cell-Edge=*/6
+                              : (from_order + 1)});
         // E.g, v_2 = CV[(c + total_cells_offset) * 4 + 2]
         Stmt *offset = offload->total_offset_local.find(from_type)->second;
         Stmt *tmp0 = block.push_back<BinaryOpStmt>(BinaryOpType::add, offset,
@@ -103,26 +107,34 @@ void demote_mesh_statements_offload(OffloadedStmt *offload,
         stmt->replace_with(std::move(block));
       }
     } else {  // low-to-high or same-order
-      SNode *rel_offset = stmt->mesh->relations.find(rel_type)->second.offset;
+      const auto &rel = stmt->mesh->relations.find(rel_type)->second;
+      SNode *rel_offset = rel.offset;
+      SNode *rel_patch_offset = rel.patch_offset;
       VecStatement block;
       Stmt *patch_idx = block.push_back<MeshPatchIndexStmt>();
       Stmt *owned_offset = offload->owned_offset_local.find(from_type)->second;
+      Stmt *patch_offset = get_load(rel_patch_offset, patch_idx, block);
       Stmt *index_offset = block.push_back<BinaryOpStmt>(
           BinaryOpType::add, patch_idx, owned_offset);
       Stmt *index = block.push_back<BinaryOpStmt>(BinaryOpType::add,
                                                   index_offset, stmt->mesh_idx);
       Stmt *offset = get_load(rel_offset, index, block);
       if (stmt->is_size()) {
-        Stmt *one = block.push_back<ConstStmt>(LaneAttribute<TypedConstant>{1});
+        Stmt *one = block.push_back<ConstStmt>(TypedConstant{1});
         Stmt *index_1 =
             block.push_back<BinaryOpStmt>(BinaryOpType::add, index, one);
         Stmt *offset_1 = get_load(rel_offset, index_1, block);
-        [[maybe_unused]] Stmt *val =
+        Stmt *val =
             block.push_back<BinaryOpStmt>(BinaryOpType::sub, offset_1, offset);
+        Stmt *casted_val =
+            block.push_back<UnaryOpStmt>(UnaryOpType::cast_value, val);
+        casted_val->as<UnaryOpStmt>()->cast_type = PrimitiveType::i32;
       } else {
         SNode *rel_value = stmt->mesh->relations.find(rel_type)->second.value;
-        Stmt *val_index = block.push_back<BinaryOpStmt>(
+        Stmt *val_local_index = block.push_back<BinaryOpStmt>(
             BinaryOpType::add, offset, stmt->neighbor_idx);
+        Stmt *val_index = block.push_back<BinaryOpStmt>(
+            BinaryOpType::add, val_local_index, patch_offset);
         [[maybe_unused]] Stmt *val = get_load(rel_value, val_index, block);
       }
       stmt->replace_with(std::move(block));
@@ -149,5 +161,4 @@ void demote_mesh_statements(IRNode *root,
 }
 
 }  // namespace irpass
-}  // namespace lang
-}  // namespace taichi
+}  // namespace taichi::lang

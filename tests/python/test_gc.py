@@ -22,9 +22,7 @@ def _test_block_gc():
     @ti.kernel
     def init():
         for i in x:
-            x[i] = ti.Vector(
-                [ti.random() * 0.1 + 0.5,
-                 ti.random() * 0.1 + 0.5])
+            x[i] = ti.Vector([ti.random() * 0.1 + 0.5, ti.random() * 0.1 + 0.5])
 
     init()
 
@@ -59,15 +57,7 @@ def test_block():
     _test_block_gc()
 
 
-#TODO: Remove exclude of ti.metal.
-@test_utils.test(require=[ti.extension.sparse, ti.extension.async_mode],
-                 exclude=[ti.metal],
-                 async_mode=True)
-def test_block_async():
-    _test_block_gc()
-
-
-@test_utils.test(require=ti.extension.sparse)
+@test_utils.test(require=ti.extension.sparse, exclude=ti.metal)
 def test_dynamic_gc():
     x = ti.field(dtype=ti.i32)
 
@@ -98,38 +88,3 @@ def test_pointer_gc():
 
         # Note that being inactive doesn't mean it's not allocated.
         assert L._num_dynamically_allocated == 1
-
-
-@test_utils.test(require=[ti.extension.sparse, ti.extension.async_mode],
-                 async_mode=True)
-def test_fuse_allocator_state():
-    N = 16
-    x = ti.field(dtype=ti.i32, shape=N)
-    y = ti.field(dtype=ti.i32)
-
-    y_parent = ti.root.pointer(ti.i, N * 2)
-    y_parent.place(y)
-
-    # https://github.com/taichi-dev/taichi/pull/1973#pullrequestreview-511154376
-
-    @ti.kernel
-    def activate_y():
-        for i in x:
-            idx = i + 1
-            y[idx] = idx
-
-    @ti.kernel
-    def deactivate_y():
-        for i in x:
-            ti.deactivate(y_parent, i)
-
-    activate_y()
-    deactivate_y()
-    ti.sync()
-
-    # TODO: assert that activate_y and deactivate_y are not fused.
-    assert y_parent._num_dynamically_allocated == N
-    ys = y.to_numpy()
-    for i, y in enumerate(ys):
-        expected = N if i == N else 0
-        assert y == expected

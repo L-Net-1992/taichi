@@ -5,8 +5,7 @@
 #include "taichi/ir/statements.h"
 #include "taichi/ir/visitors.h"
 
-namespace taichi {
-namespace lang {
+namespace taichi::lang {
 
 DiffRange operator+(const DiffRange &a, const DiffRange &b) {
   return DiffRange(a.related() && b.related(), a.coeff + b.coeff, a.low + b.low,
@@ -43,13 +42,12 @@ class ValueDiffLoopIndex : public IRVisitor {
  public:
   // first: related, second: offset
   using ret_type = DiffRange;
-  int lane;  // Note:  lane may change when visiting ElementShuffle
   Stmt *input_stmt, *loop;
   int loop_index;
   std::map<int, ret_type> results;
 
-  ValueDiffLoopIndex(Stmt *stmt, int lane, Stmt *loop, int loop_index)
-      : lane(lane), input_stmt(stmt), loop(loop), loop_index(loop_index) {
+  ValueDiffLoopIndex(Stmt *stmt, Stmt *loop, int loop_index)
+      : input_stmt(stmt), loop(loop), loop_index(loop_index) {
     allow_undefined_visitor = true;
     invoke_default_visitor = true;
   }
@@ -70,8 +68,8 @@ class ValueDiffLoopIndex : public IRVisitor {
     } else if (auto range_for = stmt->loop->cast<RangeForStmt>()) {
       if (range_for->begin->is<ConstStmt>() &&
           range_for->end->is<ConstStmt>()) {
-        auto begin_val = range_for->begin->as<ConstStmt>()->val[0].val_int();
-        auto end_val = range_for->end->as<ConstStmt>()->val[0].val_int();
+        auto begin_val = range_for->begin->as<ConstStmt>()->val.val_int();
+        auto end_val = range_for->end->as<ConstStmt>()->val.val_int();
         // We have begin_val <= end_val even when range_for->reversed is true:
         // in that case, the loop is iterated from end_val - 1 to begin_val.
         results[stmt->instance_id] = DiffRange(
@@ -80,19 +78,9 @@ class ValueDiffLoopIndex : public IRVisitor {
     }
   }
 
-  void visit(ElementShuffleStmt *stmt) override {
-    int old_lane = lane;
-    TI_ASSERT(stmt->width() == 1);
-    auto src = stmt->elements[lane].stmt;
-    lane = stmt->elements[lane].index;
-    src->accept(this);
-    results[stmt->instance_id] = results[src->instance_id];
-    lane = old_lane;
-  }
-
   void visit(ConstStmt *stmt) override {
-    if (stmt->val[lane].dt->is_primitive(PrimitiveTypeID::i32)) {
-      results[stmt->instance_id] = DiffRange(true, 0, stmt->val[lane].val_i32);
+    if (stmt->val.dt->is_primitive(PrimitiveTypeID::i32)) {
+      results[stmt->instance_id] = DiffRange(true, 0, stmt->val.val_i32);
     } else {
       results[stmt->instance_id] = DiffRange();
     }
@@ -152,9 +140,8 @@ class FindDirectValueBaseAndOffset : public IRVisitor {
   }
 
   void visit(ConstStmt *stmt) override {
-    TI_ASSERT(stmt->width() == 1);
-    if (stmt->val[0].dt->is_primitive(PrimitiveTypeID::i32)) {
-      result = std::make_tuple(true, nullptr, stmt->val[0].val_i32);
+    if (stmt->val.dt->is_primitive(PrimitiveTypeID::i32)) {
+      result = std::make_tuple(true, nullptr, stmt->val.val_i32);
     }
   }
 
@@ -195,8 +182,7 @@ DiffRange value_diff_loop_index(Stmt *stmt, Stmt *loop, int index_id) {
       return DiffRange(true, 1, 0);
     }
   }
-  TI_ASSERT(stmt->width() == 1);
-  auto diff = ValueDiffLoopIndex(stmt, 0, loop, index_id);
+  auto diff = ValueDiffLoopIndex(stmt, loop, index_id);
   return diff.run();
 }
 
@@ -215,5 +201,4 @@ DiffPtrResult value_diff_ptr_index(Stmt *val1, Stmt *val2) {
 
 }  // namespace analysis
 }  // namespace irpass
-}  // namespace lang
-}  // namespace taichi
+}  // namespace taichi::lang

@@ -2,8 +2,7 @@
 
 #include "taichi/ir/pass.h"
 
-namespace taichi {
-namespace lang {
+namespace taichi::lang {
 
 class MakeBlockLocalPass : public Pass {
  public:
@@ -11,8 +10,8 @@ class MakeBlockLocalPass : public Pass {
 
   struct Args {
     std::string kernel_name;
+    bool verbose;
   };
 };
 
-}  // namespace lang
-}  // namespace taichi
+}  // namespace taichi::lang

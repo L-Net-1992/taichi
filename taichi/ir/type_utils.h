@@ -1,18 +1,27 @@
 #pragma once
 
 #include "taichi/ir/type.h"
+#include "taichi/ir/type_factory.h"
+#include "taichi/rhi/arch.h"
 
-namespace taichi {
-namespace lang {
+namespace taichi::lang {
 
-std::string data_type_name(DataType t);
+std::vector<int> data_type_shape(DataType t);
 
-std::string data_type_format(DataType dt);
+TI_DLL_EXPORT std::string data_type_name(DataType t);
 
-int data_type_size(DataType t);
+TI_DLL_EXPORT int data_type_size(DataType t);
+
+TI_DLL_EXPORT int data_type_size_gfx(DataType t);
+
+TI_DLL_EXPORT std::string data_type_format(DataType dt, Arch arch = Arch::x64);
 
 inline int data_type_bits(DataType t) {
   return data_type_size(t) * 8;
+}
+
+inline size_t align_up(size_t x, size_t alignment) {
+  return (x + alignment - 1) / alignment * alignment;
 }
 
 template <typename T>
@@ -31,6 +40,8 @@ inline DataType get_data_type() {
     return PrimitiveType::i32;
   } else if (std::is_same<T, int64>()) {
     return PrimitiveType::i64;
+  } else if (std::is_same<T, uint1>()) {
+    return PrimitiveType::u1;
   } else if (std::is_same<T, uint8>()) {
     return PrimitiveType::u8;
   } else if (std::is_same<T, uint16>()) {
@@ -73,14 +84,20 @@ inline PrimitiveTypeID get_primitive_data_type() {
   }
 }
 
-inline bool is_custom_type(DataType dt) {
-  return dt->is<CustomIntType>() || dt->is<CustomFloatType>();
+inline bool is_tensor(DataType dt) {
+  return dt->is<TensorType>();
+}
+
+inline bool is_quant(DataType dt) {
+  return dt->is<QuantIntType>() || dt->is<QuantFixedType>() ||
+         dt->is<QuantFloatType>();
 }
 
 inline bool is_real(DataType dt) {
   return dt->is_primitive(PrimitiveTypeID::f16) ||
          dt->is_primitive(PrimitiveTypeID::f32) ||
-         dt->is_primitive(PrimitiveTypeID::f64) || dt->is<CustomFloatType>();
+         dt->is_primitive(PrimitiveTypeID::f64) || dt->is<QuantFixedType>() ||
+         dt->is<QuantFloatType>();
 }
 
 inline bool is_integral(DataType dt) {
@@ -88,16 +105,17 @@ inline bool is_integral(DataType dt) {
          dt->is_primitive(PrimitiveTypeID::i16) ||
          dt->is_primitive(PrimitiveTypeID::i32) ||
          dt->is_primitive(PrimitiveTypeID::i64) ||
+         dt->is_primitive(PrimitiveTypeID::u1) ||
          dt->is_primitive(PrimitiveTypeID::u8) ||
          dt->is_primitive(PrimitiveTypeID::u16) ||
          dt->is_primitive(PrimitiveTypeID::u32) ||
-         dt->is_primitive(PrimitiveTypeID::u64) || dt->is<CustomIntType>();
+         dt->is_primitive(PrimitiveTypeID::u64) || dt->is<QuantIntType>();
 }
 
 inline bool is_signed(DataType dt) {
   // Shall we return false if is_integral returns false?
   TI_ASSERT(is_integral(dt));
-  if (auto t = dt->cast<CustomIntType>())
+  if (auto t = dt->cast<QuantIntType>())
     return t->get_is_signed();
   return dt->is_primitive(PrimitiveTypeID::i8) ||
          dt->is_primitive(PrimitiveTypeID::i16) ||
@@ -124,10 +142,6 @@ inline DataType to_unsigned(DataType dt) {
     return PrimitiveType::unknown;
 }
 
-inline bool needs_grad(DataType dt) {
-  return is_real(dt);
-}
-
 inline TypedConstant get_max_value(DataType dt) {
   if (dt->is_primitive(PrimitiveTypeID::i8)) {
     return {dt, std::numeric_limits<int8>::max()};
@@ -137,6 +151,8 @@ inline TypedConstant get_max_value(DataType dt) {
     return {dt, std::numeric_limits<int32>::max()};
   } else if (dt->is_primitive(PrimitiveTypeID::i64)) {
     return {dt, std::numeric_limits<int64>::max()};
+  } else if (dt->is_primitive(PrimitiveTypeID::u1)) {
+    return {dt, std::numeric_limits<uint1>::max()};
   } else if (dt->is_primitive(PrimitiveTypeID::u8)) {
     return {dt, std::numeric_limits<uint8>::max()};
   } else if (dt->is_primitive(PrimitiveTypeID::u16)) {
@@ -156,29 +172,115 @@ inline TypedConstant get_max_value(DataType dt) {
 
 inline TypedConstant get_min_value(DataType dt) {
   if (dt->is_primitive(PrimitiveTypeID::i8)) {
-    return {dt, std::numeric_limits<int8>::min()};
+    return {dt, std::numeric_limits<int8>::lowest()};
   } else if (dt->is_primitive(PrimitiveTypeID::i16)) {
-    return {dt, std::numeric_limits<int16>::min()};
+    return {dt, std::numeric_limits<int16>::lowest()};
   } else if (dt->is_primitive(PrimitiveTypeID::i32)) {
-    return {dt, std::numeric_limits<int32>::min()};
+    return {dt, std::numeric_limits<int32>::lowest()};
   } else if (dt->is_primitive(PrimitiveTypeID::i64)) {
-    return {dt, std::numeric_limits<int64>::min()};
+    return {dt, std::numeric_limits<int64>::lowest()};
+  } else if (dt->is_primitive(PrimitiveTypeID::u1)) {
+    return {dt, std::numeric_limits<uint1>::lowest()};
   } else if (dt->is_primitive(PrimitiveTypeID::u8)) {
-    return {dt, std::numeric_limits<uint8>::min()};
+    return {dt, std::numeric_limits<uint8>::lowest()};
   } else if (dt->is_primitive(PrimitiveTypeID::u16)) {
-    return {dt, std::numeric_limits<uint16>::min()};
+    return {dt, std::numeric_limits<uint16>::lowest()};
   } else if (dt->is_primitive(PrimitiveTypeID::u32)) {
-    return {dt, std::numeric_limits<uint32>::min()};
+    return {dt, std::numeric_limits<uint32>::lowest()};
   } else if (dt->is_primitive(PrimitiveTypeID::u64)) {
-    return {dt, std::numeric_limits<uint64>::min()};
+    return {dt, std::numeric_limits<uint64>::lowest()};
   } else if (dt->is_primitive(PrimitiveTypeID::f32)) {
-    return {dt, std::numeric_limits<float32>::min()};
+    return {dt, std::numeric_limits<float32>::lowest()};
   } else if (dt->is_primitive(PrimitiveTypeID::f64)) {
-    return {dt, std::numeric_limits<float64>::min()};
+    return {dt, std::numeric_limits<float64>::lowest()};
   } else {
     TI_NOT_IMPLEMENTED;
   }
 }
 
-}  // namespace lang
-}  // namespace taichi
+class BitStructTypeBuilder {
+ public:
+  explicit BitStructTypeBuilder(int max_num_bits) {
+    physical_type_ =
+        TypeFactory::get_instance().get_primitive_int_type(max_num_bits);
+  }
+
+  int add_member(Type *member_type) {
+    if (auto qflt = member_type->cast<QuantFloatType>()) {
+      auto exponent_type = qflt->get_exponent_type();
+      auto exponent_id = -1;
+      if (is_placing_shared_exponent_ && current_shared_exponent_ != -1) {
+        // Reuse existing exponent
+        TI_ASSERT_INFO(member_types_[current_shared_exponent_] == exponent_type,
+                       "QuantFloatTypes with shared exponents must have "
+                       "exactly the same exponent type.");
+        exponent_id = current_shared_exponent_;
+      } else {
+        exponent_id = add_member_impl(exponent_type);
+        if (is_placing_shared_exponent_) {
+          current_shared_exponent_ = exponent_id;
+        }
+      }
+      auto digits_id = add_member_impl(member_type);
+      member_exponents_[digits_id] = exponent_id;
+      member_exponent_users_[exponent_id].push_back(digits_id);
+      return digits_id;
+    }
+    return add_member_impl(member_type);
+  }
+
+  void begin_placing_shared_exponent() {
+    TI_ASSERT(!is_placing_shared_exponent_);
+    TI_ASSERT(current_shared_exponent_ == -1);
+    is_placing_shared_exponent_ = true;
+  }
+
+  void end_placing_shared_exponent() {
+    TI_ASSERT(is_placing_shared_exponent_);
+    TI_ASSERT(current_shared_exponent_ != -1);
+    current_shared_exponent_ = -1;
+    is_placing_shared_exponent_ = false;
+  }
+
+  BitStructType *build() const {
+    return TypeFactory::get_instance().get_bit_struct_type(
+        physical_type_, member_types_, member_bit_offsets_, member_exponents_,
+        member_exponent_users_);
+  }
+
+ private:
+  int add_member_impl(Type *member_type) {
+    int old_num_members = member_types_.size();
+    member_types_.push_back(member_type);
+    member_bit_offsets_.push_back(member_total_bits_);
+    member_exponents_.push_back(-1);
+    member_exponent_users_.push_back({});
+    QuantIntType *member_qit = nullptr;
+    if (auto qit = member_type->cast<QuantIntType>()) {
+      member_qit = qit;
+    } else if (auto qfxt = member_type->cast<QuantFixedType>()) {
+      member_qit = qfxt->get_digits_type()->as<QuantIntType>();
+    } else if (auto qflt = member_type->cast<QuantFloatType>()) {
+      member_qit = qflt->get_digits_type()->as<QuantIntType>();
+    } else {
+      TI_ERROR("Only a QuantType can be a member of a BitStructType.");
+    }
+    member_total_bits_ += member_qit->get_num_bits();
+    auto physical_bits = data_type_bits(physical_type_);
+    TI_ERROR_IF(member_total_bits_ > physical_bits,
+                "BitStructType overflows: {} bits used out of {}.",
+                member_total_bits_, physical_bits);
+    return old_num_members;
+  }
+
+  PrimitiveType *physical_type_{nullptr};
+  std::vector<Type *> member_types_;
+  std::vector<int> member_bit_offsets_;
+  int member_total_bits_{0};
+  std::vector<int> member_exponents_;
+  std::vector<std::vector<int>> member_exponent_users_;
+  bool is_placing_shared_exponent_{false};
+  int current_shared_exponent_{-1};
+};
+
+}  // namespace taichi::lang

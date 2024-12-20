@@ -22,7 +22,7 @@ tracer = ti.Vector.field(2, ti.f32, shape=n_tracer)
 
 @ti.func
 def compute_u_single(p, i):
-    r2 = (p - pos[i]).norm()**2
+    r2 = (p - pos[i]).norm() ** 2
     uv = ti.Vector([pos[i].y - p.y, p.x - pos[i].x])
     return vort[i] * uv / (r2 * math.pi) * 0.5 * (1.0 - ti.exp(-r2 / eps**2))
 
@@ -75,18 +75,23 @@ def init_tracers():
         tracer[i] = [ti.random() - 0.5, ti.random() * 3 - 1.5]
 
 
-init_tracers()
+def main():
+    init_tracers()
+    gui = ti.GUI("Vortex Rings", (1024, 512), background_color=0xFFFFFF)
 
-gui = ti.GUI("Vortex Rings", (1024, 512), background_color=0xFFFFFF)
+    while gui.running:
+        for i in range(4):  # substeps
+            advect()
+            integrate_vortex()
 
-for T in range(1000):
-    for i in range(4):  # substeps
-        advect()
-        integrate_vortex()
+        gui.circles(
+            tracer.to_numpy() * np.array([[0.05, 0.1]]) + np.array([[0.0, 0.5]]),
+            radius=0.5,
+            color=0x0,
+        )
 
-    gui.circles(tracer.to_numpy() * np.array([[0.05, 0.1]]) +
-                np.array([[0.0, 0.5]]),
-                radius=0.5,
-                color=0x0)
+        gui.show()
 
-    gui.show()
+
+if __name__ == "__main__":
+    main()

@@ -13,7 +13,7 @@ def memcpy_default(arch, repeat, container, dtype, dsize, get_metric):
             dst[I] = src[I]
 
     @ti.kernel
-    def memcpy_array(dst: ti.any_arr(), src: ti.any_arr()):
+    def memcpy_array(dst: ti.types.ndarray(), src: ti.types.ndarray()):
         for I in ti.grouped(dst):
             dst[I] = src[I]
 
@@ -30,7 +30,7 @@ def memcpy_default(arch, repeat, container, dtype, dsize, get_metric):
 
 class MemcpyPlan(BenchmarkPlan):
     def __init__(self, arch: str):
-        super().__init__('memcpy', arch, basic_repeat_times=10)
+        super().__init__("memcpy", arch, basic_repeat_times=10)
         self.create_plan(Container(), DataType(), DataSize(), MetricType())
-        self.add_func(['field'], memcpy_default)
-        self.add_func(['ndarray'], memcpy_default)
+        self.add_func(["field"], memcpy_default)
+        self.add_func(["ndarray"], memcpy_default)

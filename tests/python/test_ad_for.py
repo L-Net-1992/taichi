@@ -2,6 +2,22 @@ import taichi as ti
 from tests import test_utils
 
 
+@test_utils.test()
+def test_ad_nested_for():
+    N = 5
+
+    loss = ti.field(float, shape=(), needs_grad=True)
+
+    @ti.kernel
+    def nested_for():
+        for i in range(N):
+            for j in range(N):
+                pass
+
+    with ti.ad.Tape(loss=loss):
+        nested_for()
+
+
 @test_utils.test(require=ti.extension.adstack)
 def test_ad_sum():
     N = 10
@@ -24,7 +40,7 @@ def test_ad_sum():
     compute_sum()
 
     for i in range(N):
-        assert p[i] == 3 * b[i] + 1
+        assert p[i] == a[i] * b[i] + 1
         p.grad[i] = 1
 
     compute_sum.grad()
@@ -86,13 +102,13 @@ def test_ad_power():
     power()
 
     for i in range(N):
-        assert p[i] == 3**b[i]
+        assert p[i] == 3 ** b[i]
         p.grad[i] = 1
 
     power.grad()
 
     for i in range(N):
-        assert a.grad[i] == b[i] * 3**(b[i] - 1)
+        assert a.grad[i] == b[i] * 3 ** (b[i] - 1)
 
 
 @test_utils.test(require=ti.extension.adstack)
@@ -177,7 +193,7 @@ def test_ad_global_ptr():
         for i in range(N):
             p = 0
             for j in range(N):
-                b[i] += a[p]**2
+                b[i] += a[p] ** 2
                 p += 1
 
         for i in range(N):
@@ -268,7 +284,7 @@ def test_double_for_loops():
     double_for.grad()
 
     for i in range(N):
-        assert a.grad[i] == 2 * i * i * 2**(i - 1)
+        assert a.grad[i] == 2 * i * i * 2 ** (i - 1)
         assert b.grad[i] == 2 * i
 
 
@@ -303,7 +319,7 @@ def test_double_for_loops_more_nests():
 
     for i in range(N):
         for k in range(N // 2):
-            assert f[i, k] == 2 * (i + k) * (1 + 2**(i + k))
+            assert f[i, k] == 2 * (i + k) * (1 + 2 ** (i + k))
             f.grad[i, k] = 1
 
     double_for.grad()
@@ -312,7 +328,7 @@ def test_double_for_loops_more_nests():
         total_grad_a = 0
         total_grad_b = 0
         for k in range(N // 2):
-            total_grad_a += 2 * (i + k)**2 * 2**(i + k - 1)
+            total_grad_a += 2 * (i + k) ** 2 * 2 ** (i + k - 1)
             total_grad_b += 2 * (i + k)
         assert a.grad[i] == total_grad_a
         assert b.grad[i] == total_grad_b
@@ -395,8 +411,7 @@ def test_triple_for_loops_bls():
     triple_for.grad()
 
     for i in range(N):
-        assert a.grad[i] == 2 * M * min(min(N - i - 1, i + 1), M) * \
-               2**(M - 1) * N
+        assert a.grad[i] == 2 * M * min(min(N - i - 1, i + 1), M) * 2 ** (M - 1) * N
     for i in range(N):
         assert b.grad[i * 2] == min(min(N - i - 1, i + 1), M) * N
         assert b.grad[i * 2 + 1] == min(min(N - i - 1, i + 1), M) * N
@@ -438,7 +453,7 @@ def test_mixed_inner_loops_tape():
                 loss[None] += ti.sin(x[None]) + 1.0
 
     x[None] = 0.0
-    with ti.Tape(loss=loss):
+    with ti.ad.Tape(loss=loss):
         mixed_inner_loops_tape()
 
     assert loss[None] == 10.0
@@ -463,7 +478,7 @@ def test_inner_loops_local_variable_fixed_stack_size_tape():
                 loss[None] += s + t
 
     x[None] = 0.0
-    with ti.Tape(loss=loss):
+    with ti.ad.Tape(loss=loss):
         test_inner_loops_local_variable()
 
     assert loss[None] == 18.0
@@ -514,7 +529,7 @@ def test_inner_loops_local_variable_adaptive_stack_size_tape():
                 loss[None] += s + t
 
     x[None] = 0.0
-    with ti.Tape(loss=loss):
+    with ti.ad.Tape(loss=loss):
         test_inner_loops_local_variable()
 
     assert loss[None] == 18.0
@@ -567,7 +582,7 @@ def test_more_inner_loops_local_variable_adaptive_stack_size_tape():
                 loss[None] += s
 
     x[None] = 0.0
-    with ti.Tape(loss=loss):
+    with ti.ad.Tape(loss=loss):
         test_more_inner_loops_local_variable()
 
     assert loss[None] == 12.0
@@ -594,16 +609,14 @@ def test_more_inner_loops_local_variable_fixed_stack_size_tape():
                 loss[None] += s
 
     x[None] = 0.0
-    with ti.Tape(loss=loss):
+    with ti.ad.Tape(loss=loss):
         test_more_inner_loops_local_variable()
 
     assert loss[None] == 12.0
     assert x.grad[None] == 36.0
 
 
-@test_utils.test(require=ti.extension.adstack,
-                 ad_stack_size=32,
-                 arch=[ti.cpu, ti.gpu])
+@test_utils.test(require=ti.extension.adstack, ad_stack_size=32, arch=[ti.cpu, ti.gpu])
 def test_stacked_inner_loops_local_variable_fixed_stack_size_kernel_grad():
     x = ti.field(dtype=float, shape=(), needs_grad=True)
     arr = ti.field(dtype=float, shape=(2), needs_grad=True)
@@ -633,11 +646,8 @@ def test_stacked_inner_loops_local_variable_fixed_stack_size_kernel_grad():
     assert x.grad[None] == 38.0
 
 
-@test_utils.test(require=ti.extension.adstack,
-                 ad_stack_size=32,
-                 arch=[ti.cpu, ti.gpu])
-def test_stacked_mixed_ib_and_non_ib_inner_loops_local_variable_fixed_stack_size_kernel_grad(
-):
+@test_utils.test(require=ti.extension.adstack, ad_stack_size=32, arch=[ti.cpu, ti.gpu])
+def test_stacked_mixed_ib_and_non_ib_inner_loops_local_variable_fixed_stack_size_kernel_grad():
     x = ti.field(dtype=float, shape=(), needs_grad=True)
     arr = ti.field(dtype=float, shape=(2), needs_grad=True)
     loss = ti.field(dtype=float, shape=(), needs_grad=True)
@@ -667,9 +677,7 @@ def test_stacked_mixed_ib_and_non_ib_inner_loops_local_variable_fixed_stack_size
     assert x.grad[None] == 56.0
 
 
-@test_utils.test(require=ti.extension.adstack,
-                 ad_stack_size=0,
-                 arch=[ti.cpu, ti.gpu])
+@test_utils.test(require=ti.extension.adstack, ad_stack_size=0, arch=[ti.cpu, ti.gpu])
 def test_stacked_inner_loops_local_variable_adaptive_stack_size_kernel_grad():
     x = ti.field(dtype=float, shape=(), needs_grad=True)
     arr = ti.field(dtype=float, shape=(2), needs_grad=True)
@@ -699,11 +707,8 @@ def test_stacked_inner_loops_local_variable_adaptive_stack_size_kernel_grad():
     assert x.grad[None] == 38.0
 
 
-@test_utils.test(require=ti.extension.adstack,
-                 ad_stack_size=0,
-                 arch=[ti.cpu, ti.gpu])
-def test_stacked_mixed_ib_and_non_ib_inner_loops_local_variable_adaptive_stack_size_kernel_grad(
-):
+@test_utils.test(require=ti.extension.adstack, ad_stack_size=0, arch=[ti.cpu, ti.gpu])
+def test_stacked_mixed_ib_and_non_ib_inner_loops_local_variable_adaptive_stack_size_kernel_grad():
     x = ti.field(dtype=float, shape=(), needs_grad=True)
     arr = ti.field(dtype=float, shape=(2), needs_grad=True)
     loss = ti.field(dtype=float, shape=(), needs_grad=True)
@@ -733,9 +738,7 @@ def test_stacked_mixed_ib_and_non_ib_inner_loops_local_variable_adaptive_stack_s
     assert x.grad[None] == 56.0
 
 
-@test_utils.test(require=ti.extension.adstack,
-                 ad_stack_size=0,
-                 arch=[ti.cpu, ti.gpu])
+@test_utils.test(require=ti.extension.adstack, ad_stack_size=0, arch=[ti.cpu, ti.gpu])
 def test_large_for_loops_adaptive_stack_size():
     x = ti.field(dtype=float, shape=(), needs_grad=True)
     arr = ti.field(dtype=float, shape=(2), needs_grad=True)
@@ -748,16 +751,14 @@ def test_large_for_loops_adaptive_stack_size():
                 for k in range(1000):
                     loss[None] += ti.sin(x[None]) + 1.0
 
-    with ti.Tape(loss=loss):
+    with ti.ad.Tape(loss=loss):
         test_large_loop()
 
     assert loss[None] == 1e7
     assert x.grad[None] == 1e7
 
 
-@test_utils.test(require=ti.extension.adstack,
-                 ad_stack_size=1,
-                 arch=[ti.cpu, ti.gpu])
+@test_utils.test(require=ti.extension.adstack, ad_stack_size=1, arch=[ti.cpu, ti.gpu])
 def test_large_for_loops_fixed_stack_size():
     x = ti.field(dtype=float, shape=(), needs_grad=True)
     arr = ti.field(dtype=float, shape=(2), needs_grad=True)
@@ -770,7 +771,7 @@ def test_large_for_loops_fixed_stack_size():
                 for k in range(1000):
                     loss[None] += ti.sin(x[None]) + 1.0
 
-    with ti.Tape(loss=loss):
+    with ti.ad.Tape(loss=loss):
         test_large_loop()
 
     assert loss[None] == 1e7
@@ -791,7 +792,7 @@ def test_multiple_ib():
                 y[None] += x[None]
 
     x[None] = 1.0
-    with ti.Tape(y):
+    with ti.ad.Tape(y):
         compute_y()
 
     assert y[None] == 12.0
@@ -817,7 +818,7 @@ def test_multiple_ib_multiple_outermost():
                 y[None] += x[None]
 
     x[None] = 1.0
-    with ti.Tape(y):
+    with ti.ad.Tape(y):
         compute_y()
 
     assert y[None] == 24.0
@@ -845,7 +846,7 @@ def test_multiple_ib_multiple_outermost_mixed():
                     y[None] += x[None]
 
     x[None] = 1.0
-    with ti.Tape(y):
+    with ti.ad.Tape(y):
         compute_y()
 
     assert y[None] == 42.0
@@ -870,7 +871,7 @@ def test_multiple_ib_mixed():
                 y[None] += x[None]
 
     x[None] = 1.0
-    with ti.Tape(y):
+    with ti.ad.Tape(y):
         compute_y()
 
     assert y[None] == 30.0
@@ -896,7 +897,7 @@ def test_multiple_ib_deeper():
                         y[None] += x[None]
 
     x[None] = 1.0
-    with ti.Tape(y):
+    with ti.ad.Tape(y):
         compute_y()
 
     assert y[None] == 42.0
@@ -955,8 +956,84 @@ def test_multiple_ib_inner_mixed():
                         y[None] += x[None]
 
     x[None] = 1.0
-    with ti.Tape(y):
+    with ti.ad.Tape(y):
         compute_y()
 
     assert y[None] == 78.0
     assert x.grad[None] == 78.0
+
+
+@test_utils.test(require=ti.extension.adstack)
+def test_ib_global_load():
+    N = 10
+    a = ti.field(ti.f32, shape=N, needs_grad=True)
+    b = ti.field(ti.i32, shape=N)
+    p = ti.field(ti.f32, shape=N, needs_grad=True)
+
+    @ti.kernel
+    def compute():
+        for i in range(N):
+            val = a[i]
+            for j in range(b[i]):
+                p[i] += i
+            p[i] = val * i
+
+    for i in range(N):
+        a[i] = i
+        b[i] = 2
+
+    compute()
+
+    for i in range(N):
+        assert p[i] == i * i
+        p.grad[i] = 1
+
+    compute.grad()
+    for i in range(N):
+        assert a.grad[i] == i
+
+
+@test_utils.test(require=ti.extension.adstack)
+def test_for_loop_index():
+    N = 2
+    M = 2
+    x = ti.field(ti.f32, shape=(N, M), needs_grad=True)
+    x[0, 0] = -0.57279384
+    x[0, 1] = 0.7815071
+    x[1, 0] = 0.45064202
+    x[1, 1] = -0.299493
+    my_x_grad = ti.field(ti.f32, shape=(N, M))
+    loss = ti.field(ti.f32, shape=(), needs_grad=True)
+
+    @ti.kernel
+    def compute():
+        for i in range(N):
+            x_sum = 0.0
+            for j in range(M):
+                x_sum += x[i, j]
+            loss[None] += ti.exp(x_sum)
+
+    @ti.kernel
+    def compute_grad():
+        for i in range(N):
+            # forward again
+            x_sum = 0.0
+            for j in range(M):
+                x_sum += x[i, j]
+            # backward
+            x_sum_grad = loss.grad[None] * ti.exp(x_sum)
+            for j in range(M):
+                my_x_grad[i, j] = x_sum_grad
+
+    # Compute gradient using AD
+    loss[None] = 0
+    compute()
+    loss.grad[None] = 1
+    compute.grad()
+
+    # Compute the mannually derived gradient
+    compute_grad()
+
+    for i in range(N):
+        for j in range(M):
+            assert test_utils.allclose(x.grad[i, j], my_x_grad[i, j])

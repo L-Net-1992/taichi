@@ -3,21 +3,20 @@
 #include <array>
 
 #include <spirv/unified1/spirv.hpp>
-#include "taichi/lang_util.h"
+#include "taichi/util/lang_util.h"
 #include "taichi/ir/type.h"
 #include "taichi/util/testing.h"
 #include "taichi/codegen/spirv/snode_struct_compiler.h"
-#include "taichi/backends/device.h"
+#include "taichi/rhi/device.h"
 #include "taichi/ir/statements.h"
 
-namespace taichi {
-namespace lang {
+namespace taichi::lang {
 namespace spirv {
 
 template <bool stop, std::size_t I, typename F>
 struct for_each_dispatcher {
   template <typename T, typename... Args>
-  static void run(const F &f, T &&value, Args &&... args) {  // NOLINT(*)
+  static void run(const F &f, T &&value, Args &&...args) {  // NOLINT(*)
     f(I, std::forward<T>(value));
     for_each_dispatcher<sizeof...(Args) == 0, (I + 1), F>::run(
         f, std::forward<Args>(args)...);
@@ -31,7 +30,7 @@ struct for_each_dispatcher<true, I, F> {
 };
 
 template <typename F, typename... Args>
-inline void for_each(const F &f, Args &&... args) {  // NOLINT(*)
+inline void for_each(const F &f, Args &&...args) {  // NOLINT(*)
   for_each_dispatcher<sizeof...(Args) == 0, 0, F>::run(
       f, std::forward<Args>(args)...);
 }
@@ -43,6 +42,7 @@ enum class TypeKind {
   kStruct,
   kPtr,
   kFunc,
+  kImage
 };
 
 // Represent the SPIRV Type
@@ -73,6 +73,7 @@ enum class ValueKind {
   kStructArrayPtr,
   kVariablePtr,
   kPhysicalPtr,
+  kTexture,
   kFunction,
   kExtInst
 };
@@ -85,6 +86,16 @@ struct Value {
   SType stype;
   // Additional flags about the value
   ValueKind flag{ValueKind::kNormal};
+
+  bool operator==(const Value &rhs) const {
+    return id == rhs.id;
+  }
+};
+
+struct ValueHasher {
+  size_t operator()(const spirv::Value &v) const {
+    return std::hash<uint32_t>()(v.id);
+  }
 };
 
 // Represent the SPIRV Label
@@ -154,6 +165,13 @@ class InstrBuilder {
     return *this;
   }
 
+  InstrBuilder &add(const std::vector<int> &v) {
+    for (const auto &v0 : v) {
+      add(v0);
+    }
+    return *this;
+  }
+
   InstrBuilder &add(const std::string &v) {
     const uint32_t word_size = sizeof(uint32_t);
     const auto nwords =
@@ -165,7 +183,7 @@ class InstrBuilder {
   }
 
   template <typename... Args>
-  InstrBuilder &add_seq(Args &&... args) {
+  InstrBuilder &add_seq(Args &&...args) {
     AddSeqHelper helper;
     helper.builder = this;
     for_each(helper, std::forward<Args>(args)...);
@@ -203,33 +221,36 @@ class InstrBuilder {
 // Builder to build up a single SPIR-V module
 class IRBuilder {
  public:
-  IRBuilder(const Device *device) : device_(device) {
+  IRBuilder(Arch arch, const DeviceCapabilityConfig *caps)
+      : arch_(arch), caps_(caps) {
   }
 
   template <typename... Args>
-  void debug(spv::Op op, Args &&... args) {
-    ib_.begin(op).add_seq(std::forward<Args>(args)...).commit(&debug_);
+  void debug_name(spv::Op op, Args &&...args) {
+    ib_.begin(op).add_seq(std::forward<Args>(args)...).commit(&names_);
   }
 
+  Value debug_string(std::string str);
+
   template <typename... Args>
-  void execution_mode(Value func, Args &&... args) {
+  void execution_mode(Value func, Args &&...args) {
     ib_.begin(spv::OpExecutionMode)
         .add_seq(func, std::forward<Args>(args)...)
         .commit(&exec_mode_);
   }
 
   template <typename... Args>
-  void decorate(spv::Op op, Args &&... args) {
+  void decorate(spv::Op op, Args &&...args) {
     ib_.begin(op).add_seq(std::forward<Args>(args)...).commit(&decorate_);
   }
 
   template <typename... Args>
-  void declare_global(spv::Op op, Args &&... args) {
+  void declare_global(spv::Op op, Args &&...args) {
     ib_.begin(op).add_seq(std::forward<Args>(args)...).commit(&global_);
   }
 
   template <typename... Args>
-  Instr make_inst(spv::Op op, Args &&... args) {
+  Instr make_inst(spv::Op op, Args &&...args) {
     return ib_.begin(op)
         .add_seq(std::forward<Args>(args)...)
         .commit(&function_);
@@ -267,7 +288,7 @@ class IRBuilder {
 
   // Make a new SSA value
   template <typename... Args>
-  Value make_value(spv::Op op, const SType &out_type, Args &&... args) {
+  Value make_value(spv::Op op, const SType &out_type, Args &&...args) {
     Value val = new_value(out_type, ValueKind::kNormal);
     make_inst(op, out_type, val, std::forward<Args>(args)...);
     if (out_type.flag == TypeKind::kPtr) {
@@ -275,6 +296,11 @@ class IRBuilder {
     }
     return val;
   }
+
+  // Make an AccessChain
+  Value make_access_chain(const SType &out_type,
+                          Value base,
+                          const std::vector<int> &indices);
 
   // Make a phi value
   PhiValue make_phi(const SType &out_type, uint32_t num_incoming);
@@ -311,8 +337,10 @@ class IRBuilder {
 
   // Get null stype
   SType get_null_type();
-  // Get the spirv type for a given Taichi data type
+  // Get the spirv type for a given Taichi primitive data type
   SType get_primitive_type(const DataType &dt) const;
+  // Get the spirv type for a given Taichi data type
+  SType from_taichi_type(const DataType &dt, bool has_buffer_ptr);
   // Get the size in bytes of a given Taichi data type
   size_t get_primitive_type_size(const DataType &dt) const;
   // Get the spirv uint type with the same size of a given Taichi data type
@@ -324,6 +352,11 @@ class IRBuilder {
   // Get the pointer type that points to value_type
   SType get_pointer_type(const SType &value_type,
                          spv::StorageClass storage_class);
+  // Get an image type
+  SType get_sampled_image_type(const SType &primitive_type, int num_dimensions);
+  SType get_underlying_image_type(const SType &primitive_type,
+                                  int num_dimensions);
+  SType get_storage_image_type(BufferFormat format, int num_dimensions);
   // Get a value_type[num_elems] type
   SType get_array_type(const SType &value_type, uint32_t num_elems);
   // Get a struct{ value_type[num_elems] } type
@@ -347,6 +380,29 @@ class IRBuilder {
                         const std::string &name);
   Value struct_array_access(const SType &res_type, Value buffer, Value index);
 
+  Value texture_argument(int num_channels,
+                         int num_dimensions,
+                         uint32_t descriptor_set,
+                         uint32_t binding);
+
+  Value storage_image_argument(int num_channels,
+                               int num_dimensions,
+                               uint32_t descriptor_set,
+                               uint32_t binding,
+                               BufferFormat format);
+
+  Value sample_texture(Value texture_var,
+                       const std::vector<Value> &args,
+                       Value lod);
+
+  Value fetch_texel(Value texture_var,
+                    const std::vector<Value> &args,
+                    Value lod);
+
+  Value image_load(Value image_var, const std::vector<Value> &args);
+
+  void image_store(Value image_var, const std::vector<Value> &args);
+
   // Declare a new function
   // NOTE: only support void kernel function, i.e. main
   Value new_function() {
@@ -365,7 +421,7 @@ class IRBuilder {
     for (const auto &arg : args) {
       ib_.add(arg);
     }
-    if (device_->get_cap(DeviceCapability::spirv_version) >= 0x10400) {
+    if (caps_->get(DeviceCapability::spirv_version) >= 0x10400) {
       for (const auto &v : global_values) {
         ib_.add(v);
       }
@@ -399,8 +455,10 @@ class IRBuilder {
   void set_work_group_size(const std::array<int, 3> group_size);
   Value get_work_group_size(uint32_t dim_index);
   Value get_num_work_groups(uint32_t dim_index);
+  Value get_local_invocation_id(uint32_t dim_index);
   Value get_global_invocation_id(uint32_t dim_index);
   Value get_subgroup_invocation_id();
+  Value get_subgroup_size();
 
   // Expressions
   Value add(Value a, Value b);
@@ -414,14 +472,18 @@ class IRBuilder {
   Value le(Value a, Value b);
   Value gt(Value a, Value b);
   Value ge(Value a, Value b);
+  Value logical_and(Value a, Value b);
+  Value logical_or(Value a, Value b);
+  Value bit_field_extract(Value base, Value offset, Value count);
   Value select(Value cond, Value a, Value b);
+  Value popcnt(Value x);
 
   // Create a cast that cast value to dst_type
   Value cast(const SType &dst_type, Value value);
 
   // Create a GLSL450 call
   template <typename... Args>
-  Value call_glsl450(const SType &ret_type, uint32_t inst_id, Args &&... args) {
+  Value call_glsl450(const SType &ret_type, uint32_t inst_id, Args &&...args) {
     Value val = new_value(ret_type, ValueKind::kNormal);
     ib_.begin(spv::OpExtInst)
         .add_seq(ret_type, val, ext_glsl450_, inst_id)
@@ -430,8 +492,21 @@ class IRBuilder {
     return val;
   }
 
+  // Create a debugPrintf call
+  void call_debugprintf(std::string formats, const std::vector<Value> &args) {
+    Value format_str = debug_string(formats);
+    Value val = new_value(t_void_, ValueKind::kNormal);
+    ib_.begin(spv::OpExtInst)
+        .add_seq(t_void_, val, debug_printf_, 1, format_str);
+    for (const auto &arg : args) {
+      ib_.add(arg);
+    }
+    ib_.commit(&function_);
+  }
+
   // Local allocate, load, store methods
   Value alloca_variable(const SType &type);
+  Value alloca_workgroup_array(const SType &type);
   Value load_variable(Value pointer, const SType &res_type);
   void store_variable(Value pointer, Value value);
 
@@ -441,6 +516,14 @@ class IRBuilder {
   Value query_value(std::string name) const;
   // Check whether a value has been evaluated
   bool check_value_existence(const std::string &name) const;
+  // Create a new SSA value
+  Value new_value(const SType &type, ValueKind flag) {
+    Value val;
+    val.id = id_counter_++;
+    val.stype = type;
+    val.flag = flag;
+    return val;
+  }
 
   // Support easy access to trivial data types
   SType i64_type() const {
@@ -489,26 +572,30 @@ class IRBuilder {
   Value const_i32_one_;
 
   // Use force-inline float atomic helper function
-  Value float_atomic(AtomicOpType op_type, Value addr_ptr, Value data);
+  Value float_atomic(AtomicOpType op_type,
+                     Value addr_ptr,
+                     Value data,
+                     const DataType &dt);
+  Value integer_atomic(AtomicOpType op_type,
+                       Value addr_ptr,
+                       Value data,
+                       const DataType &dt);
+  Value atomic_operation(Value addr_ptr,
+                         Value data,
+                         std::function<Value(Value, Value)> op,
+                         const DataType &dt);
   Value rand_u32(Value global_tmp_);
   Value rand_f32(Value global_tmp_);
   Value rand_i32(Value global_tmp_);
 
  private:
-  Value new_value(const SType &type, ValueKind flag) {
-    Value val;
-    val.id = id_counter_++;
-    val.stype = type;
-    val.flag = flag;
-    return val;
-  }
-
   Value get_const(const SType &dtype, const uint64_t *pvalue, bool cache);
   SType declare_primitive_type(DataType dt);
 
   void init_random_function(Value global_tmp_);
 
-  const Device *device_;
+  Arch arch_;
+  const DeviceCapabilityConfig *caps_;
 
   // internal instruction builder
   InstrBuilder ib_;
@@ -519,6 +606,9 @@ class IRBuilder {
 
   // glsl 450 extension
   Value ext_glsl450_;
+
+  // debugprint extension
+  Value debug_printf_;
 
   SType t_bool_;
   SType t_int8_;
@@ -535,11 +625,18 @@ class IRBuilder {
   SType t_void_;
   SType t_void_func_;
   // gl compute shader related type(s) and variables
+  SType t_v2_int_;
+  SType t_v3_int_;
   SType t_v3_uint_;
+  SType t_v4_fp32_;
+  SType t_v3_fp32_;
+  SType t_v2_fp32_;
   Value gl_global_invocation_id_;
+  Value gl_local_invocation_id_;
   Value gl_num_work_groups_;
   Value gl_work_group_size_;
   Value subgroup_local_invocation_id_;
+  Value subgroup_size_;
 
   // Random function and variables
   bool init_rand_{false};
@@ -550,6 +647,12 @@ class IRBuilder {
 
   // map from value to its pointer type
   std::map<std::pair<uint32_t, spv::StorageClass>, SType> pointer_type_tbl_;
+  std::map<std::pair<uint32_t, int>, SType> sampled_image_ptr_tbl_;
+  std::map<std::pair<uint32_t, int>, SType>
+      sampled_image_underlying_image_type_;
+
+  std::map<std::pair<BufferFormat, int>, SType> storage_image_ptr_tbl_;
+
   // map from constant int to its value
   std::map<std::pair<uint32_t, uint64_t>, Value> const_tbl_;
   // map from raw_name(string) to Value
@@ -562,7 +665,17 @@ class IRBuilder {
   // Header segment
   std::vector<uint32_t> exec_mode_;
   // Debug segment
-  std::vector<uint32_t> debug_;
+  //   According to SPIR-V spec, the following debug instructions must be
+  //   grouped in the order:
+  //   - All OpString, OpSourceExtension, OpSource, and OpSourceContinued,
+  //   without forward references.
+  //   - All OpName and all OpMemberName.
+  //   - All OpModuleProcessed instructions.
+
+  // OpString segment
+  std::vector<uint32_t> strings_;
+  // OpName segment
+  std::vector<uint32_t> names_;
   // Annotation segment
   std::vector<uint32_t> decorate_;
   // Global segment: types, variables, types
@@ -573,5 +686,4 @@ class IRBuilder {
   std::vector<uint32_t> function_;
 };
 }  // namespace spirv
-}  // namespace lang
-}  // namespace taichi
+}  // namespace taichi::lang

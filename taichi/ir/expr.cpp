@@ -4,36 +4,49 @@
 #include "taichi/ir/ir.h"
 #include "taichi/program/program.h"
 
-TLANG_NAMESPACE_BEGIN
+namespace taichi::lang {
 
-void Expr::serialize(std::ostream &ss) const {
-  TI_ASSERT(expr);
-  expr->serialize(ss);
+void Expr::set_dbg_info(const DebugInfo &dbg_info) {
+  expr->dbg_info = dbg_info;
 }
 
-std::string Expr::serialize() const {
-  std::stringstream ss;
-  serialize(ss);
-  return ss.str();
-}
-
-void Expr::set_tb(const std::string &tb) {
-  expr->tb = tb;
-}
-
-void Expr::set_attribute(const std::string &key, const std::string &value) {
-  expr->set_attribute(key, value);
-}
-
-std::string Expr::get_attribute(const std::string &key) const {
-  return expr->get_attribute(key);
+const std::string &Expr::get_tb() const {
+  return expr->get_tb();
 }
 
 DataType Expr::get_ret_type() const {
   return expr->ret_type;
 }
 
-void Expr::type_check(CompileConfig *config) {
+DataType Expr::get_rvalue_type() const {
+  if (auto argload = cast<ArgLoadExpression>()) {
+    if (argload->is_ptr) {
+      return argload->ret_type.ptr_removed();
+    }
+    return argload->ret_type;
+  }
+  if (auto id = cast<IdExpression>()) {
+    return id->ret_type.ptr_removed();
+  }
+  if (auto index_expr = cast<IndexExpression>()) {
+    return index_expr->ret_type.ptr_removed();
+  }
+  if (auto unary = cast<UnaryOpExpression>()) {
+    if (unary->type == UnaryOpType::frexp) {
+      return unary->ret_type.ptr_removed();
+    }
+    return unary->ret_type;
+  }
+  if (auto texture_op = cast<TextureOpExpression>()) {
+    if (texture_op->op == TextureOpType::kStore) {
+      return texture_op->ret_type.ptr_removed();
+    }
+    return texture_op->ret_type;
+  }
+  return expr->ret_type;
+}
+
+void Expr::type_check(const CompileConfig *config) {
   expr->type_check(config);
 }
 
@@ -45,39 +58,31 @@ Expr bit_cast(const Expr &input, DataType dt) {
   return Expr::make<UnaryOpExpression>(UnaryOpType::cast_bits, input, dt);
 }
 
-Expr Expr::operator[](const ExprGroup &indices) const {
-  TI_ASSERT(is<GlobalVariableExpression>() || is<ExternalTensorExpression>());
-  return Expr::make<GlobalPtrExpression>(*this, indices);
-}
-
 Expr &Expr::operator=(const Expr &o) {
   set(o);
   return *this;
 }
 
-Expr Expr::parent() const {
-  TI_ASSERT_INFO(is<GlobalVariableExpression>(),
-                 "Cannot get snode parent of non-global variables.");
-  return Expr::make<GlobalVariableExpression>(
-      cast<GlobalVariableExpression>()->snode->parent);
-}
-
 SNode *Expr::snode() const {
-  TI_ASSERT_INFO(is<GlobalVariableExpression>(),
-                 "Cannot get snode of non-global variables.");
-  return cast<GlobalVariableExpression>()->snode;
+  TI_ASSERT_INFO(is<FieldExpression>(),
+                 "Cannot get snode of non-field expressions.");
+  return cast<FieldExpression>()->snode;
 }
 
-Expr Expr::operator!() {
-  return Expr::make<UnaryOpExpression>(UnaryOpType::logic_not, expr);
+void Expr::set_adjoint(const Expr &o) {
+  this->cast<FieldExpression>()->adjoint.set(o);
 }
 
-void Expr::declare(DataType dt) {
-  set(Expr::make<GlobalVariableExpression>(dt, Identifier()));
+void Expr::set_dual(const Expr &o) {
+  this->cast<FieldExpression>()->dual.set(o);
 }
 
-void Expr::set_grad(const Expr &o) {
-  this->cast<GlobalVariableExpression>()->adjoint.set(o);
+void Expr::set_adjoint_checkbit(const Expr &o) {
+  this->cast<FieldExpression>()->adjoint_checkbit.set(o);
+}
+
+Expr::Expr(uint1 x) : Expr() {
+  expr = std::make_shared<ConstExpression>(PrimitiveType::u1, x);
 }
 
 Expr::Expr(int16 x) : Expr() {
@@ -108,48 +113,30 @@ Expr expr_rand(DataType dt) {
   return Expr::make<RandExpression>(dt);
 }
 
-Expr snode_append(SNode *snode, const ExprGroup &indices, const Expr &val) {
-  return Expr::make<SNodeOpExpression>(snode, SNodeOpType::append, indices,
-                                       val);
+Expr assume_range(const Expr &expr,
+                  const Expr &base,
+                  int low,
+                  int high,
+                  const DebugInfo &dbg_info) {
+  return Expr::make<RangeAssumptionExpression>(expr, base, low, high, dbg_info);
 }
 
-Expr snode_append(const Expr &expr, const ExprGroup &indices, const Expr &val) {
-  return snode_append(expr.snode(), indices, val);
+Expr loop_unique(const Expr &input,
+                 const std::vector<SNode *> &covers,
+                 const DebugInfo &dbg_info) {
+  return Expr::make<LoopUniqueExpression>(input, covers, dbg_info);
 }
 
-Expr snode_is_active(SNode *snode, const ExprGroup &indices) {
-  return Expr::make<SNodeOpExpression>(snode, SNodeOpType::is_active, indices);
-}
-
-Expr snode_length(SNode *snode, const ExprGroup &indices) {
-  return Expr::make<SNodeOpExpression>(snode, SNodeOpType::length, indices);
-}
-
-Expr snode_get_addr(SNode *snode, const ExprGroup &indices) {
-  return Expr::make<SNodeOpExpression>(snode, SNodeOpType::get_addr, indices);
-}
-
-Expr snode_length(const Expr &expr, const ExprGroup &indices) {
-  return snode_length(expr.snode(), indices);
-}
-
-Expr assume_range(const Expr &expr, const Expr &base, int low, int high) {
-  return Expr::make<RangeAssumptionExpression>(expr, base, low, high);
-}
-
-Expr loop_unique(const Expr &input, const std::vector<SNode *> &covers) {
-  return Expr::make<LoopUniqueExpression>(input, covers);
-}
-
-Expr global_new(Expr id_expr, DataType dt) {
+Expr expr_field(Expr id_expr, DataType dt) {
   TI_ASSERT(id_expr.is<IdExpression>());
-  auto ret = Expr(std::make_shared<GlobalVariableExpression>(
-      dt, id_expr.cast<IdExpression>()->id));
+  auto ret = Expr(
+      std::make_shared<FieldExpression>(dt, id_expr.cast<IdExpression>()->id));
   return ret;
 }
 
-Expr global_new(DataType dt, std::string name) {
-  auto id_expr = std::make_shared<IdExpression>(name);
-  return Expr::make<GlobalVariableExpression>(dt, id_expr->id);
+Expr expr_matrix_field(const std::vector<Expr> &fields,
+                       const std::vector<int> &element_shape) {
+  return Expr::make<MatrixFieldExpression>(fields, element_shape);
 }
-TLANG_NAMESPACE_END
+
+}  // namespace taichi::lang

@@ -4,7 +4,7 @@
 #include "taichi/ir/transforms.h"
 #include "taichi/ir/visitors.h"
 
-TLANG_NAMESPACE_BEGIN
+namespace taichi::lang {
 
 class BinaryOpSimp : public BasicStmtVisitor {
  public:
@@ -14,7 +14,7 @@ class BinaryOpSimp : public BasicStmtVisitor {
   bool operand_swapped;
 
   explicit BinaryOpSimp(bool fast_math_)
-      : BasicStmtVisitor(), fast_math(fast_math_), operand_swapped(false) {
+      : fast_math(fast_math_), operand_swapped(false) {
   }
 
   bool try_rearranging_const_rhs(BinaryOpStmt *stmt) {
@@ -63,7 +63,7 @@ class BinaryOpSimp : public BasicStmtVisitor {
     if ((op1 == BinaryOpType::bit_shr || op1 == BinaryOpType::bit_sar) &&
         op2 == BinaryOpType::bit_shl &&
         irpass::analysis::same_value(const_lhs_rhs, const_rhs)) {
-      int64 mask = -((int64)1 << (uint64)const_rhs->val[0].val_as_int64());
+      int64 mask = -((int64)1 << (uint64)const_rhs->val.val_as_int64());
       auto mask_stmt =
           Stmt::make<ConstStmt>(TypedConstant(stmt->ret_type, mask));
       auto new_stmt = Stmt::make<BinaryOpStmt>(
@@ -192,4 +192,4 @@ bool binary_op_simplify(IRNode *root, const CompileConfig &config) {
 
 }  // namespace irpass
 
-TLANG_NAMESPACE_END
+}  // namespace taichi::lang

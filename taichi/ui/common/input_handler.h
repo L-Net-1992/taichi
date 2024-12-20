@@ -4,7 +4,7 @@
 #include <vector>
 #include "taichi/ui/utils/utils.h"
 
-TI_UI_NAMESPACE_BEGIN
+namespace taichi::ui {
 
 class InputHandler {
  public:
@@ -30,8 +30,11 @@ class InputHandler {
       first_mouse_ = false;
     }
 
-    last_x_ = xpos;
-    last_y_ = ypos;
+    int w, h;
+    glfwGetWindowSize(window, &w, &h);
+
+    last_x_ = xpos / double(w);
+    last_y_ = ypos / double(h);
 
     for (auto f : user_mouse_pos_callbacks_) {
       f(xpos, ypos);
@@ -101,4 +104,4 @@ class InputHandler {
   std::vector<std::function<void(int, int)>> user_mouse_button_callbacks_;
 };
 
-TI_UI_NAMESPACE_END
+}  // namespace taichi::ui
