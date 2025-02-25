@@ -37,6 +37,38 @@ def test_classfunc():
             assert arr.val[i, j] == i * j * 2
 
 
+@test_utils.test(arch=[ti.cpu, ti.cuda])
+def test_class_real_func():
+    @ti.data_oriented
+    class Array2D:
+        def __init__(self, n, m):
+            self.n = n
+            self.m = m
+            self.val = ti.field(ti.f32, shape=(n, m))
+
+        @ti.real_func
+        def inc(self, i: ti.i32, j: ti.i32):
+            self.val[i, j] += i * j
+
+        @ti.real_func
+        def mul(self, i: ti.i32, j: ti.i32) -> ti.i32:
+            return i * j
+
+        @ti.kernel
+        def fill(self):
+            for i, j in self.val:
+                self.inc(i, j)
+                self.val[i, j] += self.mul(i, j)
+
+    arr = Array2D(128, 128)
+
+    arr.fill()
+
+    for i in range(arr.n):
+        for j in range(arr.m):
+            assert arr.val[i, j] == i * j * 2
+
+
 @test_utils.test(arch=get_host_arch_list())
 def test_oop():
     @ti.data_oriented
@@ -79,7 +111,7 @@ def test_oop():
     arr.inc2(4)
     assert arr.val[3, 4] == 7
 
-    with ti.Tape(loss=arr.total):
+    with ti.ad.Tape(loss=arr.total):
         arr.reduce()
 
     for i in range(arr.n):
@@ -90,7 +122,7 @@ def test_oop():
     def double():
         double_total[None] = 2 * arr.total[None]
 
-    with ti.Tape(loss=double_total):
+    with ti.ad.Tape(loss=double_total):
         arr.reduce()
         double()
 
@@ -137,9 +169,9 @@ def test_oop_two_items():
     assert arr1.val[3, 4] == arr1_inc
     assert arr2.val[8, 6] == arr2_inc
 
-    with ti.Tape(loss=arr1.total):
+    with ti.ad.Tape(loss=arr1.total):
         arr1.reduce()
-    with ti.Tape(loss=arr2.total, clear_gradients=False):
+    with ti.ad.Tape(loss=arr2.total, clear_gradients=False):
         arr2.reduce()
     for i in range(arr1.n):
         for j in range(arr1.m):
@@ -160,7 +192,7 @@ def test_oop_inherit_ok():
             self.val = ti.field(ti.f32)
             self.total = ti.field(ti.f32)
             self.mul = mul
-            ti.root.dense(ti.ij, (self.n, )).place(self.val)
+            ti.root.dense(ti.ij, (self.n,)).place(self.val)
             ti.root.place(self.total)
 
         @ti.kernel
@@ -172,7 +204,7 @@ def test_oop_inherit_ok():
 
     ti.root.lazy_grad()
 
-    with ti.Tape(loss=arr.total):
+    with ti.ad.Tape(loss=arr.total):
         arr.reduce()
     for i in range(arr.n):
         for j in range(arr.n):
@@ -187,7 +219,7 @@ def test_oop_class_must_be_data_oriented():
             self.val = ti.field(ti.f32)
             self.total = ti.field(ti.f32)
             self.mul = mul
-            ti.root.dense(ti.ij, (self.n, )).place(self.val)
+            ti.root.dense(ti.ij, (self.n,)).place(self.val)
             ti.root.place(self.total)
 
         @ti.kernel
@@ -225,7 +257,7 @@ def test_hook():
 
     for i in range(32):
         for j in range(32):
-            assert (solver.val[i, j] == 1.0)
+            assert solver.val[i, j] == 1.0
 
 
 @test_utils.test()

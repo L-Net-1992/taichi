@@ -4,8 +4,7 @@
 
 #include "taichi/common/core.h"
 
-namespace taichi {
-namespace lang {
+namespace taichi::lang {
 
 enum class UnaryOpType : int {
 #define PER_UNARY_OP(x) x,
@@ -38,10 +37,19 @@ enum class BinaryOpType : int {
 inline bool binary_is_bitwise(BinaryOpType t) {
   return t == BinaryOpType ::bit_and || t == BinaryOpType ::bit_or ||
          t == BinaryOpType ::bit_xor || t == BinaryOpType ::bit_shl ||
-         t == BinaryOpType ::bit_sar;
+         t == BinaryOpType ::bit_shr || t == BinaryOpType ::bit_sar;
+}
+
+inline bool binary_is_logical(BinaryOpType t) {
+  return t == BinaryOpType ::logical_and || t == BinaryOpType ::logical_or;
 }
 
 std::string binary_op_type_name(BinaryOpType type);
+
+inline bool is_shift_op(BinaryOpType type) {
+  return type == BinaryOpType::bit_sar || type == BinaryOpType::bit_shl ||
+         type == BinaryOpType::bit_shr;
+}
 
 inline bool is_comparison(BinaryOpType type) {
   return starts_with(binary_op_type_name(type), "cmp");
@@ -53,11 +61,20 @@ inline bool is_bit_op(BinaryOpType type) {
 
 std::string binary_op_type_symbol(BinaryOpType type);
 
-enum class TernaryOpType : int { select, undefined };
+enum class TernaryOpType : int { select, ifte, undefined };
 
 std::string ternary_type_name(TernaryOpType type);
 
-enum class AtomicOpType : int { add, sub, max, min, bit_and, bit_or, bit_xor };
+enum class AtomicOpType : int {
+  add,
+  sub,
+  max,
+  min,
+  bit_and,
+  bit_or,
+  bit_xor,
+  mul
+};
 
 std::string atomic_op_type_name(AtomicOpType type);
 BinaryOpType atomic_to_binary_op_type(AtomicOpType type);
@@ -69,11 +86,21 @@ enum class SNodeOpType : int {
   activate,
   deactivate,
   append,
+  allocate,
   clear,
   undefined
 };
 
 std::string snode_op_type_name(SNodeOpType type);
 
-}  // namespace lang
-}  // namespace taichi
+enum class TextureOpType : int {
+  kUndefined,
+  kSampleLod,
+  kFetchTexel,
+  kLoad,
+  kStore
+};
+
+std::string texture_op_type_name(TextureOpType type);
+
+}  // namespace taichi::lang

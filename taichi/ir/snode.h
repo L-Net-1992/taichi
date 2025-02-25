@@ -8,8 +8,7 @@
 #include "taichi/ir/type.h"
 #include "taichi/program/snode_expr_utils.h"
 
-namespace taichi {
-namespace lang {
+namespace taichi::lang {
 class Program;
 class SNodeRwAccessorsBank;
 
@@ -25,7 +24,7 @@ class Axis {
   Axis() {
     value = 0;
   }
-  Axis(int value) : value(value) {
+  explicit Axis(int value) : value(value) {
     TI_ERROR_UNLESS(0 <= value && value < taichi_max_num_indices,
                     "Too many dimensions. The maximum dimensionality is {}",
                     taichi_max_num_indices);
@@ -38,12 +37,10 @@ class Axis {
 struct AxisExtractor {
   /**
    * Number of elements from root at this index.
-   *
-   * This is the raw number, *not* padded to power-of-two (POT).
    */
   int num_elements_from_root{1};
   /**
-   * Shape at this index (POT or packed) according to the config.
+   * Shape at this index.
    */
   int shape{1};
   /**
@@ -51,36 +48,9 @@ struct AxisExtractor {
    */
   int acc_shape{1};
   /**
-   * Number of bits needed to store the coordinate at this index.
-   *
-   * ceil(log2(shape))
-   */
-  int num_bits{0};
-  /**
-   * Accumulated offset from the last activated index to the first one.
-   *
-   * This is the starting bit of this index in a linearized 1D coordinate. For
-   * example, assuming an SNode of (ti.ijk, shape=(4, 8, 16)). ti.i takes 2
-   * bits, ti.j 3 bits and ti.k 4 bits. Then for a linearized coordinate:
-   * ti.k uses bits [0, 4), acc_offset=0
-   * ti.j uses bits [4, 7), acc_offset=4
-   * ti.i uses bits [7, 9), acc_offset=7
-   */
-  int acc_offset{0};
-  /**
    * Whether this index (axis) is activated.
    */
   bool active{false};
-
-  /**
-   * Activates the current index.
-   *
-   * @param num_bits Number of bits needed to store the POT shape.
-   */
-  void activate(int num_bits) {
-    active = true;
-    this->num_bits = num_bits;
-  }
 };
 
 /**
@@ -93,7 +63,10 @@ class SNode {
    public:
     virtual ~GradInfoProvider() = default;
     virtual bool is_primal() const = 0;
-    virtual SNode *grad_snode() const = 0;
+    virtual SNodeGradType get_snode_grad_type() const = 0;
+    virtual SNode *adjoint_snode() const = 0;
+    virtual SNode *dual_snode() const = 0;
+    virtual SNode *adjoint_checkbit_snode() const = 0;
 
     template <typename T>
     T *cast() {
@@ -119,43 +92,33 @@ class SNode {
   std::string name;
   // Product of the |shape| of all the activated axes identified by
   // |extractors|.
-  // See https://docs.taichi.graphics/lang/articles/misc/internal for terms
+  // See https://docs.taichi-lang.org/docs/internal for terms
   // like cell and container.
   int64 num_cells_per_container{1};
-  int total_num_bits{0};
-  int total_bit_start{0};
   int chunk_size{0};
   std::size_t cell_size_bytes{0};
   std::size_t offset_bytes_in_parent_cell{0};
-  PrimitiveType *physical_type{nullptr};  // for bit_struct and bit_array only
   DataType dt;
   bool has_ambient{false};
   TypedConstant ambient_val;
   // Note: parent will not be set until structural nodes are compiled!
   SNode *parent{nullptr};
   std::unique_ptr<GradInfoProvider> grad_info{nullptr};
-  SNode *exp_snode{nullptr};  // for CustomFloatType with exponent bits
-  int bit_offset{0};          // for children of bit_struct only
-  bool placing_shared_exp{false};
-  SNode *currently_placing_exp_snode{nullptr};
-  Type *currently_placing_exp_snode_dtype{nullptr};
-  bool owns_shared_exponent{false};
-  std::vector<SNode *> exponent_users;
 
-  // is_bit_level=false: the SNode is not bitpacked
-  // is_bit_level=true: the SNode is bitpacked (i.e., strictly inside bit_struct
-  // or bit_array)
-  bool is_bit_level{false};
+  // Quant
+  PrimitiveType *physical_type{nullptr};  // for bit_struct and quant_array only
+  int id_in_bit_struct{-1};               // for children of bit_struct only
+  bool is_bit_level{false};  // true if inside bit_struct or quant_array
 
   // Whether the path from root to |this| contains only `dense` SNodes.
   bool is_path_all_dense{true};
 
-  SNode(SNodeGlobalVarExprMap *snode_to_glb_var_exprs = nullptr,
-        SNodeRwAccessorsBank *snode_rw_accessors_bank = nullptr);
+  explicit SNode(SNodeFieldMap *snode_to_fields = nullptr,
+                 SNodeRwAccessorsBank *snode_rw_accessors_bank = nullptr);
 
   SNode(int depth,
         SNodeType t,
-        SNodeGlobalVarExprMap *snode_to_glb_var_exprs = nullptr,
+        SNodeFieldMap *snode_to_fields = nullptr,
         SNodeRwAccessorsBank *snode_rw_accessors_bank = nullptr);
 
   SNode(const SNode &);
@@ -170,90 +133,110 @@ class SNode {
 
   std::string get_node_type_name_hinted() const;
 
-  int get_num_bits(int physical_index) const;
-
   SNode &insert_children(SNodeType t);
 
   SNode &create_node(std::vector<Axis> axes,
                      std::vector<int> sizes,
                      SNodeType type,
-                     bool packed);
+                     const DebugInfo &dbg_info = DebugInfo());
 
   // SNodes maintains how flattened index bits are taken from indices
   SNode &dense(const std::vector<Axis> &axes,
                const std::vector<int> &sizes,
-               bool packed) {
-    return create_node(axes, sizes, SNodeType::dense, packed);
+               const DebugInfo &dbg_info = DebugInfo()) {
+    return create_node(axes, sizes, SNodeType::dense, dbg_info);
   }
 
-  SNode &dense(const std::vector<Axis> &axes, int sizes, bool packed) {
-    return create_node(axes, std::vector<int>{sizes}, SNodeType::dense, packed);
+  SNode &dense(const std::vector<Axis> &axes,
+               int sizes,
+               const DebugInfo &dbg_info = DebugInfo()) {
+    return create_node(axes, std::vector<int>{sizes}, SNodeType::dense,
+                       dbg_info);
   }
 
-  SNode &dense(const Axis &axis, int size, bool packed) {
-    return SNode::dense(std::vector<Axis>{axis}, size, packed);
+  SNode &dense(const Axis &axis,
+               int size,
+               const DebugInfo &dbg_info = DebugInfo()) {
+    return SNode::dense(std::vector<Axis>{axis}, size, dbg_info);
   }
 
   SNode &pointer(const std::vector<Axis> &axes,
                  const std::vector<int> &sizes,
-                 bool packed) {
-    return create_node(axes, sizes, SNodeType::pointer, packed);
+                 const DebugInfo &dbg_info = DebugInfo()) {
+    return create_node(axes, sizes, SNodeType::pointer, dbg_info);
   }
 
-  SNode &pointer(const std::vector<Axis> &axes, int sizes, bool packed) {
+  SNode &pointer(const std::vector<Axis> &axes,
+                 int sizes,
+                 const DebugInfo &dbg_info = DebugInfo()) {
     return create_node(axes, std::vector<int>{sizes}, SNodeType::pointer,
-                       packed);
+                       dbg_info);
   }
 
-  SNode &pointer(const Axis &axis, int size, bool packed) {
-    return SNode::pointer(std::vector<Axis>{axis}, size, packed);
+  SNode &pointer(const Axis &axis,
+                 int size,
+                 const DebugInfo &dbg_info = DebugInfo()) {
+    return SNode::pointer(std::vector<Axis>{axis}, size, dbg_info);
   }
 
   SNode &bitmasked(const std::vector<Axis> &axes,
                    const std::vector<int> &sizes,
-                   bool packed) {
-    return create_node(axes, sizes, SNodeType::bitmasked, packed);
+                   const DebugInfo &dbg_info = DebugInfo()) {
+    return create_node(axes, sizes, SNodeType::bitmasked, dbg_info);
   }
 
-  SNode &bitmasked(const std::vector<Axis> &axes, int sizes, bool packed) {
+  SNode &bitmasked(const std::vector<Axis> &axes,
+                   int sizes,
+                   const DebugInfo &dbg_info = DebugInfo()) {
     return create_node(axes, std::vector<int>{sizes}, SNodeType::bitmasked,
-                       packed);
+                       dbg_info);
   }
 
-  SNode &bitmasked(const Axis &axis, int size, bool packed) {
-    return SNode::bitmasked(std::vector<Axis>{axis}, size, packed);
+  SNode &bitmasked(const Axis &axis,
+                   int size,
+                   const DebugInfo &dbg_info = DebugInfo()) {
+    return SNode::bitmasked(std::vector<Axis>{axis}, size, dbg_info);
   }
 
   SNode &hash(const std::vector<Axis> &axes,
               const std::vector<int> &sizes,
-              bool packed) {
-    return create_node(axes, sizes, SNodeType::hash, packed);
+              const DebugInfo &dbg_info = DebugInfo()) {
+    return create_node(axes, sizes, SNodeType::hash, dbg_info);
   }
 
-  SNode &hash(const std::vector<Axis> &axes, int sizes, bool packed) {
-    return create_node(axes, std::vector<int>{sizes}, SNodeType::hash, packed);
+  SNode &hash(const std::vector<Axis> &axes,
+              int sizes,
+              const DebugInfo &dbg_info = DebugInfo()) {
+    return create_node(axes, std::vector<int>{sizes}, SNodeType::hash,
+                       dbg_info);
   }
 
-  SNode &hash(const Axis &axis, int size, bool packed) {
-    return hash(std::vector<Axis>{axis}, size, packed);
+  SNode &hash(const Axis &axis,
+              int size,
+              const DebugInfo &dbg_info = DebugInfo()) {
+    return hash(std::vector<Axis>{axis}, size, dbg_info);
   }
 
   std::string type_name() {
     return snode_type_name(type);
   }
 
-  SNode &bit_struct(int bits, bool packed);
+  SNode &bit_struct(BitStructType *bit_struct_type,
+                    const DebugInfo &dbg_info = DebugInfo());
 
-  SNode &bit_array(const std::vector<Axis> &axes,
-                   const std::vector<int> &sizes,
-                   int bits,
-                   bool packed);
+  SNode &quant_array(const std::vector<Axis> &axes,
+                     const std::vector<int> &sizes,
+                     int bits,
+                     const DebugInfo &dbg_info = DebugInfo());
 
   void print();
 
   void set_index_offsets(std::vector<int> index_offsets);
 
-  SNode &dynamic(const Axis &expr, int n, int chunk_size, bool packed);
+  SNode &dynamic(const Axis &expr,
+                 int n,
+                 int chunk_size,
+                 const DebugInfo &dbg_info = DebugInfo());
 
   SNode &morton(bool val = true) {
     _morton = val;
@@ -282,13 +265,23 @@ class SNode {
 
   bool is_primal() const;
 
+  SNodeGradType get_snode_grad_type() const;
+
   bool is_place() const;
 
   bool is_scalar() const;
 
-  bool has_grad() const;
+  bool has_adjoint() const;
 
-  SNode *get_grad() const;
+  SNode *get_adjoint() const;
+
+  bool has_adjoint_checkbit() const;
+
+  SNode *get_adjoint_checkbit() const;
+
+  bool has_dual() const;
+
+  SNode *get_dual() const;
 
   SNode *get_least_sparse_ancestor() const;
 
@@ -323,33 +316,34 @@ class SNode {
 
   int shape_along_axis(int i) const;
 
-  void place(Expr &expr, const std::vector<int> &offset) {
-    place_child(&expr, offset, this, snode_to_glb_var_exprs_);
+  void place(Expr &expr, const std::vector<int> &offset, int id_in_bit_struct) {
+    place_child(&expr, offset, id_in_bit_struct, this, snode_to_fields_);
   }
 
-  void lazy_grad() {
-    make_lazy_grad(this, snode_to_glb_var_exprs_);
-  }
+  void lazy_grad();
+
+  void lazy_dual();
+
+  void allocate_adjoint_checkbit();
 
   int64 read_int(const std::vector<int> &i);
   uint64 read_uint(const std::vector<int> &i);
   float64 read_float(const std::vector<int> &i);
   void write_int(const std::vector<int> &i, int64 val);
+  void write_uint(const std::vector<int> &i, uint64 val);
   void write_float(const std::vector<int> &i, float64 val);
 
   Expr get_expr() const;
 
   uint64 fetch_reader_result();  // TODO: refactor
 
-  void begin_shared_exp_placement();
-
-  void end_shared_exp_placement();
-
   // SNodeTree part
 
   void set_snode_tree_id(int id);
 
-  int get_snode_tree_id();
+  int get_snode_tree_id() const;
+
+  const SNode *get_root() const;
 
   static void reset_counter() {
     counter = 0;
@@ -357,9 +351,9 @@ class SNode {
 
  private:
   int snode_tree_id_{0};
-  SNodeGlobalVarExprMap *snode_to_glb_var_exprs_{nullptr};
-  SNodeRwAccessorsBank *snode_rw_accessors_bank_{nullptr};
+  SNodeFieldMap *snode_to_fields_{nullptr};
+  SNodeRwAccessorsBank *snode_rw_accessors_bank_{
+      nullptr};  // owned by the "Program" class
 };
 
-}  // namespace lang
-}  // namespace taichi
+}  // namespace taichi::lang

@@ -10,16 +10,18 @@
 
 #include "taichi/common/core.h"
 #include "taichi/common/exceptions.h"
+#include "taichi/common/one_or_more.h"
 #include "taichi/ir/snode.h"
 #include "taichi/ir/mesh.h"
 #include "taichi/ir/type_factory.h"
 #include "taichi/util/short_name.h"
 
+#ifdef TI_WITH_LLVM
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/ADT/MapVector.h"
+#endif
 
-namespace taichi {
-namespace lang {
+namespace taichi::lang {
 
 class IRNode;
 class Block;
@@ -29,6 +31,7 @@ using pStmt = std::unique_ptr<Stmt>;
 class SNode;
 
 class Kernel;
+class Callable;
 struct CompileConfig;
 
 enum class SNodeAccessFlag : int { block_local, read_only, mesh_local };
@@ -76,14 +79,14 @@ class MemoryAccessOptions {
 
 class Identifier {
  public:
-  static int id_counter;
   std::string name_;
+  int id{0};
 
-  int id;
+  // Identifier() = default;
 
   // Multiple identifiers can share the same name but must have different id's
-  Identifier(const std::string &name_ = "") : name_(name_) {
-    id = id_counter++;
+  explicit Identifier(int id, const std::string &name = "")
+      : name_(name), id(id) {
   }
 
   std::string raw_name() const;
@@ -99,14 +102,15 @@ class Identifier {
   bool operator==(const Identifier &o) const {
     return id == o.id;
   }
-
-  static void reset_counter() {
-    id_counter = 0;
-  }
 };
 
+#ifdef TI_WITH_LLVM
 using stmt_vector = llvm::SmallVector<pStmt, 8>;
-// using stmt_vector = std::vector<pStmt>;
+using stmt_ref_vector = llvm::SmallVector<Stmt *, 2>;
+#else
+using stmt_vector = std::vector<pStmt>;
+using stmt_ref_vector = std::vector<Stmt *>;
+#endif
 
 class VecStatement {
  public:
@@ -115,6 +119,7 @@ class VecStatement {
   VecStatement() {
   }
 
+  // NOLINTNEXTLINE(google-explicit-constructor)
   VecStatement(pStmt &&stmt) {
     push_back(std::move(stmt));
   }
@@ -123,6 +128,7 @@ class VecStatement {
     stmts = std::move(o.stmts);
   }
 
+  // NOLINTNEXTLINE(google-explicit-constructor)
   VecStatement(stmt_vector &&other_stmts) {
     stmts = std::move(other_stmts);
   }
@@ -130,7 +136,7 @@ class VecStatement {
   Stmt *push_back(pStmt &&stmt);
 
   template <typename T, typename... Args>
-  T *push_back(Args &&... args) {
+  T *push_back(Args &&...args) {
     auto up = std::make_unique<T>(std::forward<Args>(args)...);
     auto ptr = up.get();
     stmts.push_back(std::move(up));
@@ -185,15 +191,41 @@ class IRVisitor {
 #include "taichi/inc/statements.inc.h"
 
 #undef PER_STATEMENT
+#undef DEFINE_VISIT
 };
 
 struct CompileConfig;
 class Kernel;
 
+using stmt_refs = one_or_more<Stmt *>;
+
+namespace ir_traits {
+
+// FIXME: Use C++ 20 concepts to replace `dynamic_cast<T>() != nullptr`
+
+class Store {
+ public:
+  virtual ~Store() = default;
+
+  // Get the list of sinks/destinations of the store operation
+  virtual stmt_refs get_store_destination() const = 0;
+
+  // If store_stmt provides one data source, return the data.
+  virtual Stmt *get_store_data() const = 0;
+};
+
+class Load {
+ public:
+  virtual ~Load() = default;
+
+  // If load_stmt loads some variables or a stack, return the pointers of them.
+  virtual stmt_refs get_load_pointers() const = 0;
+};
+
+}  // namespace ir_traits
+
 class IRNode {
  public:
-  Kernel *kernel;
-
   virtual void accept(IRVisitor *visitor) {
     TI_NOT_IMPLEMENTED
   }
@@ -203,11 +235,9 @@ class IRNode {
   virtual IRNode *get_parent() const = 0;
 
   IRNode *get_ir_root();
-  Kernel *get_kernel() const;
+  const IRNode *get_ir_root() const;
 
   virtual ~IRNode() = default;
-
-  CompileConfig &get_config() const;
 
   template <typename T>
   bool is() const {
@@ -256,125 +286,6 @@ class IRNode {
 #define TI_DEFINE_ACCEPT_AND_CLONE \
   TI_DEFINE_ACCEPT                 \
   TI_DEFINE_CLONE
-
-template <typename T>
-struct LaneAttribute {
-  std::vector<T> data;
-
-  LaneAttribute() {
-  }
-
-  LaneAttribute(const std::vector<T> &data) : data(data) {
-  }
-
-  LaneAttribute(const T &t) : data(1, t) {
-  }
-
-  void resize(int s) {
-    data.resize(s);
-  }
-
-  void reserve(int s) {
-    data.reserve(s);
-  }
-
-  void push_back(const T &t) {
-    data.push_back(t);
-  }
-
-  std::size_t size() const {
-    return data.size();
-  }
-
-  T &operator[](int i) {
-    TI_ASSERT(0 <= i && i < (int)data.size());
-    return data[i];
-  }
-
-  const T &operator[](int i) const {
-    TI_ASSERT(0 <= i && i < (int)data.size());
-    return data[i];
-  }
-
-  LaneAttribute slice(int begin, int end) {
-    return LaneAttribute(
-        std::vector<T>(data.begin() + begin, data.begin() + end));
-  }
-
-  // for initializing single lane
-  LaneAttribute &operator=(const T &t) {
-    TI_ASSERT(data.size() == 1);
-    data[0] = t;
-    return *this;
-  }
-
-  void repeat(int factor) {
-    std::vector<T> new_data;
-    for (int i = 0; i < factor; i++) {
-      for (int j = 0; j < (int)data.size(); j++) {
-        new_data.push_back(data[j]);
-      }
-    }
-    data = new_data;
-  }
-
-  std::string serialize(std::function<std::string(const T &t)> func,
-                        std::string bracket = "") {
-    std::string ret = bracket;
-    for (int i = 0; i < (int)data.size(); i++) {
-      ret += func(data[i]);
-      if (i + 1 < (int)data.size()) {
-        ret += ", ";
-      }
-    }
-    if (bracket == "<") {
-      ret += ">";
-    } else if (bracket == "{") {
-      ret += "}";
-    } else if (bracket == "[") {
-      ret += "]";
-    } else if (bracket == "(") {
-      ret += ")";
-    } else if (bracket != "") {
-      TI_P(bracket);
-      TI_NOT_IMPLEMENTED
-    }
-    return ret;
-  }
-
-  std::string serialize(std::string bracket = "") {
-    std::string ret = bracket;
-    for (int i = 0; i < (int)data.size(); i++) {
-      ret += fmt::format("{}", data[i]);
-      if (i + 1 < (int)data.size()) {
-        ret += ", ";
-      }
-    }
-    if (bracket == "<") {
-      ret += ">";
-    } else if (bracket == "{") {
-      ret += "}";
-    } else if (bracket == "(") {
-      ret += ")";
-    } else if (bracket != "") {
-      TI_P(bracket);
-      TI_NOT_IMPLEMENTED
-    }
-    return ret;
-  }
-
-  operator T() const {
-    TI_ASSERT(data.size() == 1);
-    return data[0];
-  }
-
-  LaneAttribute &operator+=(const LaneAttribute &o) {
-    for (int i = 0; i < (int)o.size(); i++) {
-      push_back(o[i]);
-    }
-    return *this;
-  }
-};
 
 class StmtField {
  public:
@@ -450,14 +361,14 @@ class StmtFieldManager {
  public:
   std::vector<std::unique_ptr<StmtField>> fields;
 
-  StmtFieldManager(Stmt *stmt) : stmt_(stmt) {
+  explicit StmtFieldManager(Stmt *stmt) : stmt_(stmt) {
   }
 
   template <typename T>
   void operator()(const char *key, T &&value);
 
   template <typename T, typename... Args>
-  void operator()(const char *key_, T &&t, Args &&... rest) {
+  void operator()(const char *key_, T &&t, Args &&...rest) {
     std::string key(key_);
     size_t pos = key.find(',');
     std::string first_name = key.substr(0, pos);
@@ -470,7 +381,11 @@ class StmtFieldManager {
   bool equal(StmtFieldManager &other) const;
 };
 
-#define TI_STMT_DEF_FIELDS(...) TI_IO_DEF(__VA_ARGS__)
+#define TI_STMT_DEF_FIELDS(...)  \
+  template <typename S>          \
+  void io(S &serializer) const { \
+    TI_IO(__VA_ARGS__);          \
+  }
 #define TI_STMT_REG_FIELDS  \
   mark_fields_registered(); \
   io(field_manager)
@@ -478,6 +393,7 @@ class StmtFieldManager {
 class Stmt : public IRNode {
  protected:
   std::vector<Stmt **> operands;
+  explicit Stmt(const DebugInfo &dbg_info);
 
  public:
   StmtFieldManager field_manager;
@@ -487,15 +403,11 @@ class Stmt : public IRNode {
   Block *parent;
   bool erased;
   bool fields_registered;
-  std::string tb;
   DataType ret_type;
+  DebugInfo dbg_info;
 
   Stmt();
   Stmt(const Stmt &stmt);
-
-  int width() const {
-    return ret_type->vector_width();
-  }
 
   virtual bool is_container_statement() const {
     return false;
@@ -532,6 +444,16 @@ class Stmt : public IRNode {
     return *operands[i];
   }
 
+  std::string get_last_tb() const;
+
+  TI_FORCE_INLINE std::string const &get_tb() const {
+    return dbg_info.tb;
+  }
+
+  TI_FORCE_INLINE void set_tb(const std::string &tb) {
+    dbg_info.tb = tb;
+  }
+
   std::vector<Stmt *> get_operands() const;
 
   void set_operand(int i, Stmt *stmt);
@@ -546,11 +468,7 @@ class Stmt : public IRNode {
   virtual void replace_operand_with(Stmt *old_stmt, Stmt *new_stmt);
 
   IRNode *get_parent() const override;
-
-  virtual void repeat(int factor) {
-    TI_ASSERT(factor == 1);
-    // ret_type.width *= factor;
-  }
+  virtual Callable *get_callable() const;
 
   // returns the inserted stmt
   Stmt *insert_before_me(std::unique_ptr<Stmt> &&new_stmt);
@@ -571,17 +489,13 @@ class Stmt : public IRNode {
   }
 
   template <typename T, typename... Args>
-  static std::unique_ptr<T> make_typed(Args &&... args) {
+  static std::unique_ptr<T> make_typed(Args &&...args) {
     return std::make_unique<T>(std::forward<Args>(args)...);
   }
 
   template <typename T, typename... Args>
-  static pStmt make(Args &&... args) {
+  static pStmt make(Args &&...args) {
     return make_typed<T>(std::forward<Args>(args)...);
-  }
-
-  void set_tb(const std::string &tb) {
-    this->tb = tb;
   }
 
   std::string type();
@@ -599,21 +513,26 @@ class Stmt : public IRNode {
 
 class Block : public IRNode {
  public:
-  Stmt *parent_stmt{nullptr};
+  std::variant<Stmt *, Callable *> parent_;
   stmt_vector statements;
   stmt_vector trash_bin;
-  Stmt *mask_var{nullptr};
   std::vector<SNode *> stop_gradients;
 
   // Only used in frontend. Stores LoopIndexStmt or BinaryOpStmt for loop
   // variables, and AllocaStmt for other variables.
   std::map<Identifier, Stmt *> local_var_to_stmt;
 
-  Block() {
-    mask_var = nullptr;
-    parent_stmt = nullptr;
-    kernel = nullptr;
+  explicit Block(Callable *callable = nullptr) {
+    parent_ = callable;
   }
+
+  Stmt *parent_stmt() const;
+
+  void set_parent_callable(Callable *callable);
+
+  void set_parent_stmt(Stmt *stmt);
+
+  Callable *parent_callable() const;
 
   Block *parent_block() const;
 
@@ -647,7 +566,6 @@ class Block : public IRNode {
                     VecStatement &&new_statements,
                     bool replace_usages = true);
   Stmt *lookup_var(const Identifier &ident) const;
-  Stmt *mask();
   IRNode *get_parent() const override;
 
   Stmt *back() const {
@@ -655,7 +573,7 @@ class Block : public IRNode {
   }
 
   template <typename T, typename... Args>
-  Stmt *push_back(Args &&... args) {
+  Stmt *push_back(Args &&...args) {
     auto stmt = std::make_unique<T>(std::forward<Args>(args)...);
     stmt->parent = this;
     statements.emplace_back(std::move(stmt));
@@ -703,30 +621,23 @@ class DelayedIRModifier {
   void mark_as_modified();
 };
 
-struct LocalAddress {
-  Stmt *var;
-  int offset;
+// ImmediateIRModifier aims at replacing Stmt::replace_usages_with, which visits
+// the whole tree for a single replacement. ImmediateIRModifier is currently
+// associated with a pass, visits the whole tree once at the beginning of that
+// pass, and performs a single replacement with amortized constant time.
+class ImmediateIRModifier {
+ private:
+  std::unordered_map<Stmt *, std::vector<std::pair<Stmt *, int>>> stmt_usages_;
 
-  LocalAddress(Stmt *var, int offset);
-};
-
-class VectorElement {
  public:
-  Stmt *stmt;
-  int index;
-
-  VectorElement() : stmt(nullptr), index(0) {
-  }
-
-  VectorElement(Stmt *stmt, int index) : stmt(stmt), index(index) {
-  }
+  explicit ImmediateIRModifier(IRNode *root);
+  void replace_usages_with(Stmt *old_stmt, Stmt *new_stmt);
 };
 
 template <typename T>
 inline void StmtFieldManager::operator()(const char *key, T &&value) {
   using decay_T = typename std::decay<T>::type;
-  if constexpr (is_specialization<decay_T, std::vector>::value ||
-                is_specialization<decay_T, LaneAttribute>::value) {
+  if constexpr (is_specialization<decay_T, std::vector>::value) {
     stmt_->field_manager.fields.emplace_back(
         std::make_unique<StmtFieldNumeric<std::size_t>>(value.size()));
     for (int i = 0; i < (int)value.size(); i++) {
@@ -743,14 +654,6 @@ inline void StmtFieldManager::operator()(const char *key, T &&value) {
     }
   } else if constexpr (std::is_same<decay_T, Stmt *>::value) {
     stmt_->register_operand(const_cast<Stmt *&>(value));
-  } else if constexpr (std::is_same<decay_T, LocalAddress>::value) {
-    stmt_->register_operand(const_cast<Stmt *&>(value.var));
-    stmt_->field_manager.fields.emplace_back(
-        std::make_unique<StmtFieldNumeric<int>>(value.offset));
-  } else if constexpr (std::is_same<decay_T, VectorElement>::value) {
-    stmt_->register_operand(const_cast<Stmt *&>(value.stmt));
-    stmt_->field_manager.fields.emplace_back(
-        std::make_unique<StmtFieldNumeric<int>>(value.index));
   } else if constexpr (std::is_same<decay_T, SNode *>::value) {
     stmt_->field_manager.fields.emplace_back(
         std::make_unique<StmtFieldSNode>(value));
@@ -763,5 +666,4 @@ inline void StmtFieldManager::operator()(const char *key, T &&value) {
   }
 }
 
-}  // namespace lang
-}  // namespace taichi
+}  // namespace taichi::lang

@@ -11,65 +11,24 @@
 #include "taichi/transforms/constant_fold.h"
 #include "taichi/program/program.h"
 
-TLANG_NAMESPACE_BEGIN
+namespace taichi::lang {
+namespace {
+template <typename T>
+T sar(T value, unsigned int amount) {
+  return value < 0 ? ~(~value >> amount) : value >> amount;
+}
+
+template <typename T>
+T shr(T value, unsigned int shift) {
+  return static_cast<T>(
+      static_cast<typename std::make_unsigned<T>::type>(value) >> shift);
+}
+}  // namespace
 
 class ConstantFold : public BasicStmtVisitor {
  public:
   using BasicStmtVisitor::visit;
   DelayedIRModifier modifier;
-  Program *program;
-
-  explicit ConstantFold(Program *program)
-      : BasicStmtVisitor(), program(program) {
-  }
-
-  Kernel *get_jit_evaluator_kernel(JITEvaluatorId const &id) {
-    auto &cache = program->jit_evaluator_cache;
-    // Discussion:
-    // https://github.com/taichi-dev/taichi/pull/954#discussion_r423442606
-    std::lock_guard<std::mutex> _(program->jit_evaluator_cache_mut);
-    auto it = cache.find(id);
-    if (it != cache.end())  // cached?
-      return it->second.get();
-
-    auto kernel_name = fmt::format("jit_evaluator_{}", cache.size());
-    auto func = [&id, this]() {
-      auto lhstmt =
-          Stmt::make<ArgLoadStmt>(/*arg_id=*/0, id.lhs, /*is_ptr=*/false);
-      auto rhstmt =
-          Stmt::make<ArgLoadStmt>(/*arg_id=*/1, id.rhs, /*is_ptr=*/false);
-      pStmt oper;
-      if (id.is_binary) {
-        oper = Stmt::make<BinaryOpStmt>(id.binary_op(), lhstmt.get(),
-                                        rhstmt.get());
-      } else {
-        oper = Stmt::make<UnaryOpStmt>(id.unary_op(), lhstmt.get());
-        if (unary_op_is_cast(id.unary_op())) {
-          oper->cast<UnaryOpStmt>()->cast_type = id.rhs;
-        }
-      }
-      auto ret = Stmt::make<ReturnStmt>(oper.get());
-      program->current_ast_builder()->insert(std::move(lhstmt));
-      if (id.is_binary)
-        program->current_ast_builder()->insert(std::move(rhstmt));
-      program->current_ast_builder()->insert(std::move(oper));
-      program->current_ast_builder()->insert(std::move(ret));
-    };
-
-    auto ker = std::make_unique<Kernel>(*program, func, kernel_name);
-    ker->insert_ret(id.ret);
-    ker->insert_arg(id.lhs, false);
-    if (id.is_binary)
-      ker->insert_arg(id.rhs, false);
-    ker->is_evaluator = true;
-
-    auto *ker_ptr = ker.get();
-    TI_TRACE("Saving JIT evaluator cache entry id={}",
-             std::hash<JITEvaluatorId>{}(id));
-    cache[id] = std::move(ker);
-
-    return ker_ptr;
-  }
 
   static bool is_good_type(DataType dt) {
     // ConstStmt of `bad` types like `i8` is not supported by LLVM.
@@ -77,6 +36,7 @@ class ConstantFold : public BasicStmtVisitor {
     // https://github.com/taichi-dev/taichi/pull/839#issuecomment-625902727
     if (dt->is_primitive(PrimitiveTypeID::i32) ||
         dt->is_primitive(PrimitiveTypeID::i64) ||
+        dt->is_primitive(PrimitiveTypeID::u1) ||
         dt->is_primitive(PrimitiveTypeID::u32) ||
         dt->is_primitive(PrimitiveTypeID::u64) ||
         dt->is_primitive(PrimitiveTypeID::f32) ||
@@ -86,68 +46,225 @@ class ConstantFold : public BasicStmtVisitor {
       return false;
   }
 
-  bool jit_evaluate_binary_op(TypedConstant &ret,
-                              BinaryOpStmt *stmt,
-                              const TypedConstant &lhs,
-                              const TypedConstant &rhs) {
-    if (!is_good_type(ret.dt))
-      return false;
-    JITEvaluatorId id{std::this_thread::get_id(),
-                      (int)stmt->op_type,
-                      ret.dt,
-                      lhs.dt,
-                      rhs.dt,
-                      true};
-    auto *ker = get_jit_evaluator_kernel(id);
-    auto launch_ctx = ker->make_launch_context();
-    launch_ctx.set_arg_raw(0, lhs.val_u64);
-    launch_ctx.set_arg_raw(1, rhs.val_u64);
-    {
-      std::lock_guard<std::mutex> _(program->jit_evaluator_cache_mut);
-      (*ker)(launch_ctx);
-      ret.val_i64 = program->fetch_result<int64_t>(0);
+  std::optional<TypedConstant> get_scalar_value_to_replace(BinaryOpStmt *stmt,
+                                                           ConstStmt *lhs,
+                                                           ConstStmt *rhs,
+                                                           DataType dst_type) {
+    TypedConstant new_constant(dst_type);
+
+    if (stmt->op_type == BinaryOpType::pow) {
+      if (is_integral(rhs->ret_type)) {
+        auto rhs_val = rhs->val.val_int();
+        if (rhs_val < 0 && is_integral(dst_type)) {
+          TI_ERROR("Negative exponent in pow(int, int) is not allowed.");
+        }
+      }
     }
-    return true;
+
+    // Type check should have been done at this point.
+    auto dt = lhs->val.dt;
+
+    std::optional<TypedConstant> res = std::nullopt;
+    switch (stmt->op_type) {
+#define COMMA ,
+#define HANDLE_REAL_AND_INTEGRAL_BINARY(OP_TYPE, PREFIX, OP_CPP)              \
+  case BinaryOpType::OP_TYPE: {                                               \
+    if (dt->is_primitive(PrimitiveTypeID::f32) ||                             \
+        dt->is_primitive(PrimitiveTypeID::f64)) {                             \
+      res = TypedConstant(dst_type,                                           \
+                          PREFIX(lhs->val.val_cast_to_float64()               \
+                                     OP_CPP rhs->val.val_cast_to_float64())); \
+    } else if (dt->is_primitive(PrimitiveTypeID::i32) ||                      \
+               dt->is_primitive(PrimitiveTypeID::i64)) {                      \
+      res = TypedConstant(                                                    \
+          dst_type, PREFIX(lhs->val.val_int() OP_CPP rhs->val.val_int()));    \
+    } else if (dt->is_primitive(PrimitiveTypeID::u32) ||                      \
+               dt->is_primitive(PrimitiveTypeID::u64)) {                      \
+      res = TypedConstant(                                                    \
+          dst_type, PREFIX(lhs->val.val_uint() OP_CPP rhs->val.val_uint()));  \
+    } else if (dt->is_primitive(PrimitiveTypeID::u1)) {                       \
+      res = TypedConstant(dst_type,                                           \
+                          PREFIX(int32(lhs->val.val_uint1())                  \
+                                     OP_CPP int32(rhs->val.val_uint1())));    \
+    }                                                                         \
+    break;                                                                    \
   }
 
-  bool jit_evaluate_unary_op(TypedConstant &ret,
-                             UnaryOpStmt *stmt,
-                             const TypedConstant &operand) {
-    if (!is_good_type(ret.dt))
-      return false;
-    JITEvaluatorId id{std::this_thread::get_id(),
-                      (int)stmt->op_type,
-                      ret.dt,
-                      operand.dt,
-                      stmt->cast_type,
-                      false};
-    auto *ker = get_jit_evaluator_kernel(id);
-    auto launch_ctx = ker->make_launch_context();
-    launch_ctx.set_arg_raw(0, operand.val_u64);
-    {
-      std::lock_guard<std::mutex> _(program->jit_evaluator_cache_mut);
-      (*ker)(launch_ctx);
-      ret.val_i64 = program->fetch_result<int64_t>(0);
+      HANDLE_REAL_AND_INTEGRAL_BINARY(mul, , *)
+      HANDLE_REAL_AND_INTEGRAL_BINARY(add, , +)
+      HANDLE_REAL_AND_INTEGRAL_BINARY(sub, , -)
+      HANDLE_REAL_AND_INTEGRAL_BINARY(floordiv, std::floor, /)
+      HANDLE_REAL_AND_INTEGRAL_BINARY(div, , /)
+      HANDLE_REAL_AND_INTEGRAL_BINARY(cmp_lt, , <)
+      HANDLE_REAL_AND_INTEGRAL_BINARY(cmp_le, , <=)
+      HANDLE_REAL_AND_INTEGRAL_BINARY(cmp_gt, , >)
+      HANDLE_REAL_AND_INTEGRAL_BINARY(cmp_ge, , >=)
+      HANDLE_REAL_AND_INTEGRAL_BINARY(cmp_eq, , ==)
+      HANDLE_REAL_AND_INTEGRAL_BINARY(cmp_ne, , !=)
+
+      HANDLE_REAL_AND_INTEGRAL_BINARY(max, std::max, COMMA)
+      HANDLE_REAL_AND_INTEGRAL_BINARY(min, std::min, COMMA)
+      HANDLE_REAL_AND_INTEGRAL_BINARY(atan2, std::atan2, COMMA)
+      HANDLE_REAL_AND_INTEGRAL_BINARY(pow, std::pow, COMMA)
+#undef HANDLE_REAL_AND_INTEGRAL_BINARY
+
+#define HANDLE_INTEGRAL_BINARY(OP_TYPE, PREFIX, OP_CPP)                        \
+  case BinaryOpType::OP_TYPE: {                                                \
+    if (dt->is_primitive(PrimitiveTypeID::i32)) {                              \
+      res = TypedConstant(                                                     \
+          dst_type, PREFIX(lhs->val.val_int32() OP_CPP rhs->val.val_int32())); \
+    } else if (dt->is_primitive(PrimitiveTypeID::i64)) {                       \
+      res = TypedConstant(                                                     \
+          dst_type, PREFIX(lhs->val.val_int() OP_CPP rhs->val.val_int()));     \
+    } else if (dt->is_primitive(PrimitiveTypeID::u32) ||                       \
+               dt->is_primitive(PrimitiveTypeID::u64)) {                       \
+      res = TypedConstant(                                                     \
+          dst_type, PREFIX(lhs->val.val_uint() OP_CPP rhs->val.val_uint()));   \
+    }                                                                          \
+    break;                                                                     \
+  }
+
+      HANDLE_INTEGRAL_BINARY(mod, , %)
+      HANDLE_INTEGRAL_BINARY(bit_and, , &)
+      HANDLE_INTEGRAL_BINARY(bit_or, , |)
+      HANDLE_INTEGRAL_BINARY(bit_xor, , ^)
+      HANDLE_INTEGRAL_BINARY(bit_shl, , <<)
+      HANDLE_INTEGRAL_BINARY(bit_shr, shr, COMMA)
+      HANDLE_INTEGRAL_BINARY(bit_sar, sar, COMMA)
+#undef HANDLE_INTEGRAL_BINARY
+#undef COMMA
+
+      case BinaryOpType::truediv:
+        TI_ERROR("{} should have been lowered.",
+                 binary_op_type_name(stmt->op_type));
+        break;
+
+      default:
+        break;
     }
-    return true;
+
+    return res;
   }
 
   void visit(BinaryOpStmt *stmt) override {
-    auto lhs = stmt->lhs->cast<ConstStmt>();
-    auto rhs = stmt->rhs->cast<ConstStmt>();
-    if (!lhs || !rhs)
-      return;
-    if (stmt->width() != 1)
-      return;
-    auto dst_type = stmt->ret_type;
-    TypedConstant new_constant(dst_type);
-    if (jit_evaluate_binary_op(new_constant, stmt, lhs->val[0], rhs->val[0])) {
-      auto evaluated =
-          Stmt::make<ConstStmt>(LaneAttribute<TypedConstant>(new_constant));
-      stmt->replace_usages_with(evaluated.get());
-      modifier.insert_before(stmt, std::move(evaluated));
-      modifier.erase(stmt);
+    auto lhs = stmt->lhs;
+    auto rhs = stmt->rhs;
+
+    if (lhs->is<ConstStmt>() && rhs->is<ConstStmt>()) {
+      auto typed_constant = get_scalar_value_to_replace(
+          stmt, lhs->as<ConstStmt>(), rhs->as<ConstStmt>(), stmt->ret_type);
+      if (!typed_constant)
+        return;
+
+      TypedConstant new_constant = *typed_constant;
+      insert_and_erase(stmt, new_constant);
+    } else if (lhs->is<MatrixInitStmt>() && rhs->is<MatrixInitStmt>()) {
+      int num_values = rhs->as<MatrixInitStmt>()->values.size();
+
+      std::vector<TypedConstant> typed_constants;
+      for (int i = 0; i < num_values; i++) {
+        auto scalar_lhs =
+            lhs->as<MatrixInitStmt>()->values[i]->cast<ConstStmt>();
+        auto scalar_rhs =
+            rhs->as<MatrixInitStmt>()->values[i]->cast<ConstStmt>();
+        if (!scalar_lhs || !scalar_rhs)
+          return;
+
+        auto typed_constant = get_scalar_value_to_replace(
+            stmt, scalar_lhs, scalar_rhs, stmt->ret_type.get_element_type());
+        if (!typed_constant)
+          return;
+
+        TypedConstant new_constant = *typed_constant;
+        typed_constants.push_back(new_constant);
+      }
+      insert_and_erase(stmt, typed_constants);
     }
+  }
+
+  std::optional<TypedConstant> get_scalar_value_to_replace(UnaryOpStmt *stmt,
+                                                           ConstStmt *operand,
+                                                           DataType dst_type) {
+    if (stmt->is_cast() && stmt->op_type == UnaryOpType::cast_bits) {
+      TypedConstant new_constant(dst_type);
+      new_constant.value_bits = operand->val.value_bits;
+      return new_constant;
+    }
+    const auto dt = operand->val.dt;
+    if (!is_good_type(dt))
+      return std::nullopt;
+
+    std::optional<TypedConstant> res = std::nullopt;
+    switch (stmt->op_type) {
+#define HANDLE_REAL_AND_INTEGRAL_UNARY(OP_TYPE, OP_CPP)                \
+  case UnaryOpType::OP_TYPE: {                                         \
+    if (dt->is_primitive(PrimitiveTypeID::f32) ||                      \
+        dt->is_primitive(PrimitiveTypeID::f64)) {                      \
+      res = TypedConstant(dst_type, OP_CPP(operand->val.val_float())); \
+    } else if (dt->is_primitive(PrimitiveTypeID::i32) ||               \
+               dt->is_primitive(PrimitiveTypeID::i64)) {               \
+      res = TypedConstant(dst_type, OP_CPP(operand->val.val_int()));   \
+    } else if (dt->is_primitive(PrimitiveTypeID::u32) ||               \
+               dt->is_primitive(PrimitiveTypeID::u64)) {               \
+      res = TypedConstant(dst_type, OP_CPP(operand->val.val_uint()));  \
+    }                                                                  \
+    break;                                                             \
+  }
+
+      HANDLE_REAL_AND_INTEGRAL_UNARY(neg, -)
+      HANDLE_REAL_AND_INTEGRAL_UNARY(sqrt, std::sqrt)
+      HANDLE_REAL_AND_INTEGRAL_UNARY(round, std::round)
+      HANDLE_REAL_AND_INTEGRAL_UNARY(floor, std::floor)
+      HANDLE_REAL_AND_INTEGRAL_UNARY(ceil, std::ceil)
+      HANDLE_REAL_AND_INTEGRAL_UNARY(abs, std::fabs)
+      HANDLE_REAL_AND_INTEGRAL_UNARY(sin, std::sin)
+      HANDLE_REAL_AND_INTEGRAL_UNARY(asin, std::asin)
+      HANDLE_REAL_AND_INTEGRAL_UNARY(cos, std::cos)
+      HANDLE_REAL_AND_INTEGRAL_UNARY(acos, std::acos)
+      HANDLE_REAL_AND_INTEGRAL_UNARY(tan, std::tan)
+      HANDLE_REAL_AND_INTEGRAL_UNARY(tanh, std::tanh)
+      HANDLE_REAL_AND_INTEGRAL_UNARY(log, std::log)
+      HANDLE_REAL_AND_INTEGRAL_UNARY(exp, std::exp)
+      HANDLE_REAL_AND_INTEGRAL_UNARY(rsqrt, 1.0 / std::sqrt)
+#undef HANDLE_REAL_AND_INTEGRAL_UNARY
+
+#define HANDLE_INTEGRAL_UNARY(OP_TYPE, OP_CPP)                        \
+  case UnaryOpType::OP_TYPE: {                                        \
+    if (dt->is_primitive(PrimitiveTypeID::i32) ||                     \
+        dt->is_primitive(PrimitiveTypeID::i64)) {                     \
+      res = TypedConstant(dst_type, OP_CPP(operand->val.val_int()));  \
+    } else if (dt->is_primitive(PrimitiveTypeID::u32) ||              \
+               dt->is_primitive(PrimitiveTypeID::u64)) {              \
+      res = TypedConstant(dst_type, OP_CPP(operand->val.val_uint())); \
+    } else if (dt->is_primitive(PrimitiveTypeID::u1)) {               \
+      res = TypedConstant(dst_type, !operand->val.val_uint1());       \
+    }                                                                 \
+    break;                                                            \
+  }
+
+      HANDLE_INTEGRAL_UNARY(bit_not, ~)
+      HANDLE_INTEGRAL_UNARY(logic_not, !)
+#undef HANDLE_INTEGRAL_UNARY
+
+      case UnaryOpType::cast_value: {
+        if (dt->is_primitive(PrimitiveTypeID::f32) ||
+            dt->is_primitive(PrimitiveTypeID::f64)) {
+          res = TypedConstant(dst_type, operand->val.val_float());
+        } else if (dt->is_primitive(PrimitiveTypeID::i32) ||
+                   dt->is_primitive(PrimitiveTypeID::i64)) {
+          res = TypedConstant(dst_type, operand->val.val_int());
+        } else if (dt->is_primitive(PrimitiveTypeID::u32) ||
+                   dt->is_primitive(PrimitiveTypeID::u64)) {
+          res = TypedConstant(dst_type, operand->val.val_uint());
+        } else if (dt->is_primitive(PrimitiveTypeID::u1)) {
+          res = TypedConstant(dst_type, operand->val.val_uint1());
+        }
+        break;
+      }
+      default:
+        return std::nullopt;
+    }
+    return res;
   }
 
   void visit(UnaryOpStmt *stmt) override {
@@ -156,78 +273,37 @@ class ConstantFold : public BasicStmtVisitor {
       modifier.erase(stmt);
       return;
     }
-    auto operand = stmt->operand->cast<ConstStmt>();
-    if (!operand)
-      return;
-    if (stmt->width() != 1) {
-      return;
-    }
-    if (stmt->is_cast()) {
-      bool cast_available = true;
-      TypedConstant new_constant(stmt->ret_type);
-      auto operand = stmt->operand->cast<ConstStmt>();
-      if (stmt->op_type == UnaryOpType::cast_bits) {
-        new_constant.value_bits = operand->val[0].value_bits;
-      } else {
-        if (stmt->cast_type == PrimitiveType::f32) {
-          new_constant.val_f32 = float32(operand->val[0].val_cast_to_float64());
-        } else if (stmt->cast_type == PrimitiveType::f64) {
-          new_constant.val_f64 = operand->val[0].val_cast_to_float64();
-        } else {
-          cast_available = false;
-        }
-      }
-      if (cast_available) {
-        auto evaluated =
-            Stmt::make<ConstStmt>(LaneAttribute<TypedConstant>(new_constant));
-        stmt->replace_usages_with(evaluated.get());
-        modifier.insert_before(stmt, std::move(evaluated));
-        modifier.erase(stmt);
+
+    if (auto operand = stmt->operand->cast<ConstStmt>()) {
+      auto typed_constant =
+          get_scalar_value_to_replace(stmt, operand, stmt->ret_type);
+      if (!typed_constant)
         return;
+
+      TypedConstant new_constant = *typed_constant;
+      insert_and_erase(stmt, new_constant);
+    } else if (auto operand = stmt->operand->cast<MatrixInitStmt>()) {
+      std::vector<TypedConstant> typed_constants;
+      for (auto &scalar_operand : operand->values) {
+        auto const_scalar_operand = scalar_operand->cast<ConstStmt>();
+        if (!const_scalar_operand)
+          return;
+
+        auto typed_constant = get_scalar_value_to_replace(
+            stmt, const_scalar_operand, stmt->ret_type.get_element_type());
+        if (!typed_constant)
+          return;
+
+        TypedConstant new_constant = *typed_constant;
+        typed_constants.push_back(new_constant);
       }
-    }
-    auto dst_type = stmt->ret_type;
-    TypedConstant new_constant(dst_type);
-    if (jit_evaluate_unary_op(new_constant, stmt, operand->val[0])) {
-      auto evaluated =
-          Stmt::make<ConstStmt>(LaneAttribute<TypedConstant>(new_constant));
-      stmt->replace_usages_with(evaluated.get());
-      modifier.insert_before(stmt, std::move(evaluated));
-      modifier.erase(stmt);
+      insert_and_erase(stmt, typed_constants);
     }
   }
 
-  void visit(BitExtractStmt *stmt) override {
-    auto input = stmt->input->cast<ConstStmt>();
-    if (!input)
-      return;
-    if (stmt->width() != 1)
-      return;
-    std::unique_ptr<Stmt> result_stmt;
-    if (is_signed(input->val[0].dt)) {
-      auto result = (input->val[0].val_int() >> stmt->bit_begin) &
-                    ((1LL << (stmt->bit_end - stmt->bit_begin)) - 1);
-      result_stmt = Stmt::make<ConstStmt>(LaneAttribute<TypedConstant>(
-          TypedConstant(input->val[0].dt, result)));
-    } else {
-      auto result = (input->val[0].val_uint() >> stmt->bit_begin) &
-                    ((1LL << (stmt->bit_end - stmt->bit_begin)) - 1);
-      result_stmt = Stmt::make<ConstStmt>(LaneAttribute<TypedConstant>(
-          TypedConstant(input->val[0].dt, result)));
-    }
-    stmt->replace_usages_with(result_stmt.get());
-    modifier.insert_before(stmt, std::move(result_stmt));
-    modifier.erase(stmt);
-  }
-
-  static bool run(IRNode *node, Program *program) {
-    ConstantFold folder(program);
+  static bool run(IRNode *node) {
+    ConstantFold folder;
     bool modified = false;
-
-    auto program_compile_config_org = program->config;
-    program->config.advanced_optimization = false;
-    program->config.constant_folding = false;
-    program->config.external_optimization_level = 0;
 
     while (true) {
       node->accept(&folder);
@@ -238,9 +314,32 @@ class ConstantFold : public BasicStmtVisitor {
       }
     }
 
-    program->config = program_compile_config_org;
-
     return modified;
+  }
+
+ private:
+  void insert_and_erase(Stmt *stmt, const TypedConstant &new_constant) {
+    auto evaluated = Stmt::make<ConstStmt>(new_constant);
+    stmt->replace_usages_with(evaluated.get());
+    modifier.insert_before(stmt, std::move(evaluated));
+    modifier.erase(stmt);
+  }
+
+  void insert_and_erase(Stmt *stmt,
+                        const std::vector<TypedConstant> &new_constants) {
+    std::vector<Stmt *> values;
+    for (auto &new_constant : new_constants) {
+      auto const_stmt = Stmt::make<ConstStmt>(new_constant);
+      values.push_back(const_stmt.get());
+      modifier.insert_before(stmt, std::move(const_stmt));
+    }
+
+    auto evaluated = Stmt::make<MatrixInitStmt>(values);
+    evaluated->ret_type = stmt->ret_type;
+
+    stmt->replace_usages_with(evaluated.get());
+    modifier.insert_before(stmt, std::move(evaluated));
+    modifier.erase(stmt);
   }
 };
 
@@ -248,24 +347,11 @@ const PassID ConstantFoldPass::id = "ConstantFoldPass";
 
 namespace irpass {
 
-bool constant_fold(IRNode *root,
-                   const CompileConfig &config,
-                   const ConstantFoldPass::Args &args) {
+bool constant_fold(IRNode *root) {
   TI_AUTO_PROF;
-  // @archibate found that `debug=True` will cause JIT kernels
-  // to evaluate incorrectly (always return 0), so we simply
-  // disable constant_fold when config.debug is turned on.
-  // Discussion:
-  // https://github.com/taichi-dev/taichi/pull/839#issuecomment-626107010
-  if (config.debug) {
-    TI_TRACE("config.debug enabled, ignoring constant fold");
-    return false;
-  }
-  if (!config.advanced_optimization)
-    return false;
-  return ConstantFold::run(root, args.program);
+  return ConstantFold::run(root);
 }
 
 }  // namespace irpass
 
-TLANG_NAMESPACE_END
+}  // namespace taichi::lang

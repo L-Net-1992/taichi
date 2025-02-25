@@ -13,7 +13,7 @@ def fill_default(arch, repeat, container, dtype, dsize, get_metric):
             dst[I] = ti.cast(0.7, dtype)
 
     @ti.kernel
-    def fill_array(dst: ti.any_arr()):
+    def fill_array(dst: ti.types.ndarray()):
         for i in dst:
             dst[i] = ti.cast(0.7, dtype)
 
@@ -50,11 +50,11 @@ def fill_sparse(arch, repeat, container, dtype, dsize, get_metric):
 
 class FillPlan(BenchmarkPlan):
     def __init__(self, arch: str):
-        super().__init__('fill', arch, basic_repeat_times=10)
+        super().__init__("fill", arch, basic_repeat_times=10)
         fill_container = Container()
-        fill_container.update({'sparse': None})  # None: implement by feature
+        fill_container.update({"sparse": None})  # None: implement by feature
         self.create_plan(fill_container, DataType(), DataSize(), MetricType())
         # use tag_list to label the customized implementation (funcs).
-        self.add_func(['field'], fill_default)
-        self.add_func(['ndarray'], fill_default)
-        self.add_func(['sparse'], fill_sparse)
+        self.add_func(["field"], fill_default)
+        self.add_func(["ndarray"], fill_default)
+        self.add_func(["sparse"], fill_sparse)

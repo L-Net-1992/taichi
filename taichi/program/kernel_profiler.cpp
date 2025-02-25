@@ -1,11 +1,13 @@
 #include "kernel_profiler.h"
 
 #include "taichi/system/timer.h"
-#include "taichi/backends/cuda/cuda_driver.h"
-#include "taichi/backends/cuda/cuda_profiler.h"
+#include "taichi/rhi/cuda/cuda_driver.h"
+#include "taichi/rhi/cuda/cuda_profiler.h"
 #include "taichi/system/timeline.h"
 
-TLANG_NAMESPACE_BEGIN
+#include "taichi/rhi/amdgpu/amdgpu_profiler.h"
+
+namespace taichi::lang {
 
 void KernelProfileStatisticalResult::insert_record(double t) {
   if (counter == 0) {
@@ -65,11 +67,33 @@ double KernelProfilerBase::get_total_time() const {
   return total_time_ms_ / 1000.0;
 }
 
+void KernelProfilerBase::insert_record(const std::string &kernel_name,
+                                       double duration_ms) {
+  // Trace record
+  KernelProfileTracedRecord record;
+  record.name = kernel_name;
+  record.kernel_elapsed_time_in_ms = duration_ms;
+  traced_records_.push_back(record);
+  // Count record
+  auto it = std::find_if(
+      statistical_results_.begin(), statistical_results_.end(),
+      [&](KernelProfileStatisticalResult &r) { return r.name == record.name; });
+  if (it == statistical_results_.end()) {
+    statistical_results_.emplace_back(record.name);
+    it = std::prev(statistical_results_.end());
+  }
+  it->insert_record(duration_ms);
+  total_time_ms_ += duration_ms;
+}
+
 namespace {
 // A simple profiler that uses Time::get_time()
 class DefaultProfiler : public KernelProfilerBase {
  public:
   void sync() override {
+  }
+
+  void update() override {
   }
 
   void clear() override {
@@ -122,9 +146,15 @@ std::unique_ptr<KernelProfilerBase> make_profiler(Arch arch, bool enable) {
 #else
     TI_NOT_IMPLEMENTED;
 #endif
+  } else if (arch == Arch::amdgpu) {
+#if defined(TI_WITH_AMDGPU)
+    return std::make_unique<KernelProfilerAMDGPU>();
+#else
+    TI_NOT_IMPLEMENTED
+#endif
   } else {
     return std::make_unique<DefaultProfiler>();
   }
 }
 
-TLANG_NAMESPACE_END
+}  // namespace taichi::lang

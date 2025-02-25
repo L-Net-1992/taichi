@@ -7,8 +7,7 @@
 #include "taichi/ir/type_utils.h"
 #include "taichi/ir/visitors.h"
 
-namespace taichi {
-namespace lang {
+namespace taichi::lang {
 namespace {
 
 using CodeRegion = ArithmeticInterpretor::CodeRegion;
@@ -59,8 +58,7 @@ class EvalVisitor : public IRVisitor {
   }
 
   void visit(ConstStmt *stmt) override {
-    TI_ASSERT(stmt->val.size() == 1);
-    context_.insert(stmt, stmt->val.data[0]);
+    context_.insert(stmt, stmt->val);
   }
 
   void visit(BinaryOpStmt *stmt) override {
@@ -95,18 +93,6 @@ class EvalVisitor : public IRVisitor {
       TI_NOT_IMPLEMENTED;
       failed_ = true;
     }
-  }
-
-  void visit(BitExtractStmt *stmt) override {
-    auto val_opt = context_.maybe_get(stmt->input);
-    if (!val_opt) {
-      failed_ = true;
-      return;
-    }
-    const uint64_t mask = (1ULL << (stmt->bit_end - stmt->bit_begin)) - 1;
-    auto val = val_opt.value().val_int();
-    val = (val >> stmt->bit_begin) & mask;
-    insert_to_ctx(stmt, stmt->ret_type, val);
   }
 
   void visit(LinearizeStmt *stmt) override {
@@ -148,6 +134,12 @@ class EvalVisitor : public IRVisitor {
       if (op == BinaryOpType::mod) {
         return lhs % rhs;
       }
+      if (op == BinaryOpType::bit_and) {
+        return lhs & rhs;
+      }
+      if (op == BinaryOpType::bit_shr) {
+        return static_cast<std::make_unsigned_t<T>>(lhs) >> rhs;
+      }
     }
     return std::nullopt;
   }
@@ -181,5 +173,4 @@ std::optional<TypedConstant> ArithmeticInterpretor::evaluate(
   return ev.run(region, init_ctx);
 }
 
-}  // namespace lang
-}  // namespace taichi
+}  // namespace taichi::lang

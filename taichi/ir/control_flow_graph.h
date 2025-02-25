@@ -5,9 +5,9 @@
 
 #include "taichi/ir/ir.h"
 
-namespace taichi {
-namespace lang {
+namespace taichi::lang {
 
+class Function;
 /**
  * A basic block in control-flow graph.
  * A CFGNode contains a reference to a part of the CHI IR, or more precisely,
@@ -17,6 +17,16 @@ namespace lang {
  * from this node to any node in |next|.
  */
 class CFGNode {
+ public:
+  // Used for TensorType'd aliasing analysis.
+  // Marks whether a TensorType'd address is modified partially or
+  // fully in this node
+  enum class UseDefineStatus {
+    FULL = 0,
+    PARTIAL = 1,
+    NONE = 2,
+  };
+
  private:
   // For accelerating get_store_forwarding_data()
   std::unordered_set<Block *> parent_blocks_;
@@ -69,14 +79,20 @@ class CFGNode {
   // Utility methods.
   static bool contain_variable(const std::unordered_set<Stmt *> &var_set,
                                Stmt *var);
+  static bool contain_variable(
+      const std::unordered_map<Stmt *, UseDefineStatus> &var_set,
+      Stmt *var);
   static bool may_contain_variable(const std::unordered_set<Stmt *> &var_set,
                                    Stmt *var);
+  static bool may_contain_variable(
+      const std::unordered_map<Stmt *, UseDefineStatus> &var_set,
+      Stmt *var);
   bool reach_kill_variable(Stmt *var) const;
   Stmt *get_store_forwarding_data(Stmt *var, int position) const;
 
   // Analyses and optimizations inside a CFGNode.
   void reaching_definition_analysis(bool after_lower_access);
-  bool store_to_load_forwarding(bool after_lower_access);
+  bool store_to_load_forwarding(bool after_lower_access, bool autodiff_enabled);
   void gather_loaded_snodes(std::unordered_set<SNode *> &snodes) const;
   void live_variable_analysis(bool after_lower_access);
   bool dead_store_elimination(bool after_lower_access);
@@ -98,8 +114,10 @@ class ControlFlowGraph {
   const int start_node = 0;
   int final_node{0};
 
+  std::unordered_map<Function *, std::unordered_set<Stmt *>> func_store_dests;
+
   template <typename... Args>
-  CFGNode *push_back(Args &&... args) {
+  CFGNode *push_back(Args &&...args) {
     nodes.emplace_back(std::make_unique<CFGNode>(std::forward<Args>(args)...));
     return nodes.back().get();
   }
@@ -145,7 +163,7 @@ class ControlFlowGraph {
   /**
    * Perform store-to-load forwarding and identical store elimination.
    */
-  bool store_to_load_forwarding(bool after_lower_access);
+  bool store_to_load_forwarding(bool after_lower_access, bool autodiff_enabled);
 
   /**
    * Perform dead store elimination and identical load elimination.
@@ -168,5 +186,4 @@ class ControlFlowGraph {
   void determine_ad_stack_size(int default_ad_stack_size);
 };
 
-}  // namespace lang
-}  // namespace taichi
+}  // namespace taichi::lang

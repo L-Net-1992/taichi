@@ -8,8 +8,7 @@
 
 #include <unordered_set>
 
-namespace taichi {
-namespace lang {
+namespace taichi::lang {
 
 class Stmt;
 
@@ -53,17 +52,18 @@ MeshRelationType relation_by_orders(int from_order, int to_order);
 MeshRelationType inverse_relation(MeshRelationType rel);
 
 struct MeshLocalRelation {
-  MeshLocalRelation(SNode *value_, SNode *offset_)
-      : value(value_), offset(offset_) {
+  MeshLocalRelation(SNode *value_, SNode *patch_offset_, SNode *offset_)
+      : value(value_), patch_offset(patch_offset_), offset(offset_) {
     fixed = false;
   }
 
-  MeshLocalRelation(SNode *value_) : value(value_) {
+  explicit MeshLocalRelation(SNode *value_) : value(value_) {
     fixed = true;
   }
 
   bool fixed;
   SNode *value{nullptr};
+  SNode *patch_offset{nullptr};
   SNode *offset{nullptr};
 };
 
@@ -92,5 +92,4 @@ struct MeshPtr {  // Mesh wrapper in python
 };
 
 }  // namespace mesh
-}  // namespace lang
-}  // namespace taichi
+}  // namespace taichi::lang

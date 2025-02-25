@@ -14,7 +14,7 @@ def test_ad_if_simple():
 
     @ti.kernel
     def func():
-        if x[None] > 0.:
+        if x[None] > 0.0:
             y[None] = x[None]
 
     x[None] = 1
@@ -149,8 +149,7 @@ def test_ad_if_parallel():
     assert x.grad[1] == 1
 
 
-@test_utils.test(require=[ti.extension.adstack, ti.extension.data64],
-                 default_fp=ti.f64)
+@test_utils.test(require=[ti.extension.adstack, ti.extension.data64], default_fp=ti.f64)
 def test_ad_if_parallel_f64():
     x = ti.field(ti.f64, shape=2)
     y = ti.field(ti.f64, shape=2)
@@ -206,8 +205,7 @@ def test_ad_if_parallel_complex():
     assert x.grad[1] == -0.25
 
 
-@test_utils.test(require=[ti.extension.adstack, ti.extension.data64],
-                 default_fp=ti.f64)
+@test_utils.test(require=[ti.extension.adstack, ti.extension.data64], default_fp=ti.f64)
 def test_ad_if_parallel_complex_f64():
     x = ti.field(ti.f64, shape=2)
     y = ti.field(ti.f64, shape=2)
@@ -242,3 +240,34 @@ def test_stack():
         impl.call_internal("test_stack")
 
     func()
+
+
+@test_utils.test()
+def test_if_condition_depend_on_for_loop_index():
+    scalar = lambda: ti.field(dtype=ti.f32)
+    vec = lambda: ti.Vector.field(3, dtype=ti.f32)
+
+    pos = vec()
+    F = vec()
+    f_bend = scalar()
+    loss_n = scalar()
+    ti.root.dense(ti.ij, (10, 10)).place(pos, F)
+    ti.root.dense(ti.i, 1).place(f_bend)
+    ti.root.place(loss_n)
+    ti.root.lazy_grad()
+
+    @ti.kernel
+    def simulation(t: ti.i32):
+        for i, j in pos:
+            coord = ti.Vector([i, j])
+            for n in range(12):
+                f = ti.Vector([0.0, 0.0, 0.0])
+                if n < 4:
+                    f = ti.Vector([1.0, 1.0, 1.0])
+                else:
+                    f = f_bend[0] * pos[coord]
+                F[coord] += f
+            pos[coord] += 1.0 * t
+
+    with ti.ad.Tape(loss=loss_n):
+        simulation(5)

@@ -6,8 +6,7 @@
 #include "taichi/ir/transforms.h"
 #include "taichi/program/program.h"
 
-namespace taichi {
-namespace lang {
+namespace taichi::lang {
 
 class DetermineAdStackSizeTest
     : public ::testing::TestWithParam<std::tuple<int, int>> {
@@ -109,7 +108,7 @@ TEST_P(DetermineAdStackSizeTest, If) {
   bool has_false_branch = (kFalseBranchPushes > 0);
 
   IRBuilder builder;
-  auto *arg = builder.create_arg_load(0, get_data_type<int>(), false);
+  auto *arg = builder.create_arg_load({0}, get_data_type<int>(), false, 0);
   auto *stack =
       builder.create_ad_stack(get_data_type<int>(), 0 /*adaptive size*/);
   auto *if_stmt = builder.create_if(arg);
@@ -158,7 +157,7 @@ INSTANTIATE_TEST_SUITE_P(
 
 TEST_F(DetermineAdStackSizeTest, EmptyNodes) {
   IRBuilder builder;
-  auto *arg = builder.create_arg_load(0, get_data_type<int>(), false);
+  auto *arg = builder.create_arg_load({0}, get_data_type<int>(), false, 0);
   auto *stack =
       builder.create_ad_stack(get_data_type<int>(), 0 /*adaptive size*/);
   auto *one = builder.get_int32(1);
@@ -184,5 +183,4 @@ TEST_F(DetermineAdStackSizeTest, EmptyNodes) {
   EXPECT_EQ(stack->max_size, 2);
 }
 
-}  // namespace lang
-}  // namespace taichi
+}  // namespace taichi::lang

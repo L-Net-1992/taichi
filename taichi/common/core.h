@@ -9,19 +9,13 @@
 #define _CRT_SECURE_NO_WARNINGS
 #endif
 
-#include <cstring>
 #include <iostream>
-#include <cstdlib>
-#include <cstdio>
-#include <cstddef>
-#include <cstdint>
-#include <utility>
 #include <type_traits>
 #include <cstdint>
 #include <algorithm>
-#include <memory>
-#include <csignal>
 #include <vector>
+#include <string>
+#include <functional>
 
 //******************************************************************************
 //                                 System State
@@ -35,7 +29,7 @@
 
 // Avoid dependency on glibc 2.27
 #if defined(TI_PLATFORM_LINUX) && defined(TI_ARCH_x64)
-// objdump -T libtaichi_core.so| grep  GLIBC_2.27
+// objdump -T libtaichi_python.so| grep  GLIBC_2.27
 __asm__(".symver logf,logf@GLIBC_2.2.5");
 __asm__(".symver powf,powf@GLIBC_2.2.5");
 __asm__(".symver expf,expf@GLIBC_2.2.5");
@@ -109,22 +103,11 @@ static_assert(__cplusplus >= 201402L, "C++14 required.");
 #define DEBUG_TRIGGER
 #endif
 
-#define TI_STATIC_ASSERT(x) static_assert((x), #x);
-
-#define TI_NAMESPACE_BEGIN namespace taichi {
-#define TI_NAMESPACE_END }
-
-#define TLANG_NAMESPACE_BEGIN \
-  namespace taichi {          \
-  namespace lang {
-
-#define TLANG_NAMESPACE_END \
-  }                         \
-  }
+#define TI_STATIC_ASSERT(x) static_assert((x), #x)
 
 void taichi_raise_assertion_failure_in_python(const char *msg);
 
-TI_NAMESPACE_BEGIN
+namespace taichi {
 
 //******************************************************************************
 //                                 System State
@@ -149,6 +132,8 @@ class CoreState {
 //******************************************************************************
 //                                 Types
 //******************************************************************************
+
+using uint1 = bool;
 
 using uchar = unsigned char;
 
@@ -217,7 +202,7 @@ float64 constexpr operator"" _fd(unsigned long long v) {
   return float64(v);
 }
 
-TI_NAMESPACE_END
+}  // namespace taichi
 //******************************************************************************
 //                           Meta-programming
 //******************************************************************************
@@ -226,7 +211,7 @@ TI_NAMESPACE_END
 
 #include "taichi/common/logging.h"
 
-TI_NAMESPACE_BEGIN
+namespace taichi {
 
 namespace zip {
 
@@ -241,10 +226,10 @@ std::vector<uint8> read(const std::string fn, bool verbose = false);
 //******************************************************************************
 
 inline std::vector<std::string> split_string(const std::string &s,
-                                             const std::string &seperators) {
+                                             const std::string &separators) {
   std::vector<std::string> ret;
   bool is_seperator[256] = {false};
-  for (auto &ch : seperators) {
+  for (auto &ch : separators) {
     is_seperator[(unsigned int)ch] = true;
   }
   int begin = 0;
@@ -282,7 +267,7 @@ inline bool starts_with(std::string const &str, std::string const &ending) {
     return std::equal(ending.begin(), ending.end(), str.begin());
 }
 
-TI_NAMESPACE_END
+}  // namespace taichi
 
 //******************************************************************************
 //                               Serialization
@@ -294,7 +279,7 @@ TI_NAMESPACE_END
 //                                   Misc.
 //******************************************************************************
 
-TI_NAMESPACE_BEGIN
+namespace taichi {
 
 extern int __trash__;
 template <typename T>
@@ -307,7 +292,7 @@ class DeferedExecution {
   std::function<void(void)> statement_;
 
  public:
-  DeferedExecution(const std::function<void(void)> &statement)
+  explicit DeferedExecution(const std::function<void(void)> &statement)
       : statement_(statement) {
   }
 
@@ -348,4 +333,4 @@ class PID {
   static int get_parent_pid();
 };
 
-TI_NAMESPACE_END
+}  // namespace taichi

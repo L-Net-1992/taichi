@@ -4,13 +4,15 @@ coverage
 Pillow
 pybind11
 GitPython
-yapf==0.31.0
+yapf
 distro
-astor
-sourceinspect
 isort
 pylint
-requests==2.26
+requests
 twine
 wheel
 astunparse
+pre-commit
+scikit-build
+numpy
+ninja; platform_system != 'Windows'

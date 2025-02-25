@@ -2,15 +2,14 @@
 
 #include "taichi/program/program.h"
 
-namespace taichi {
-namespace lang {
+namespace taichi::lang {
 
 namespace {
 void set_kernel_args(const std::vector<int> &I,
                      int num_active_indices,
-                     Kernel::LaunchContextBuilder *launch_ctx) {
+                     LaunchContextBuilder *launch_ctx) {
   for (int i = 0; i < num_active_indices; i++) {
-    launch_ctx->set_arg_int(i, I[i]);
+    launch_ctx->set_arg_int({i}, I[i]);
   }
 }
 }  // namespace
@@ -40,19 +39,22 @@ void SNodeRwAccessorsBank::Accessors::write_float(const std::vector<int> &I,
                                                   float64 val) {
   auto launch_ctx = writer_->make_launch_context();
   set_kernel_args(I, snode_->num_active_indices, &launch_ctx);
-  launch_ctx.set_arg_float(snode_->num_active_indices, val);
+  launch_ctx.set_arg_float({snode_->num_active_indices}, val);
   prog_->synchronize();
-  (*writer_)(launch_ctx);
+  const auto &compiled_kernel_data = prog_->compile_kernel(
+      prog_->compile_config(), prog_->get_device_caps(), *writer_);
+  prog_->launch_kernel(compiled_kernel_data, launch_ctx);
 }
 
 float64 SNodeRwAccessorsBank::Accessors::read_float(const std::vector<int> &I) {
   prog_->synchronize();
   auto launch_ctx = reader_->make_launch_context();
   set_kernel_args(I, snode_->num_active_indices, &launch_ctx);
-  (*reader_)(launch_ctx);
+  const auto &compiled_kernel_data = prog_->compile_kernel(
+      prog_->compile_config(), prog_->get_device_caps(), *reader_);
+  prog_->launch_kernel(compiled_kernel_data, launch_ctx);
   prog_->synchronize();
-  auto ret = reader_->get_ret_float(0);
-  return ret;
+  return launch_ctx.get_struct_ret_float({0});
 }
 
 // for int32 and int64
@@ -60,24 +62,45 @@ void SNodeRwAccessorsBank::Accessors::write_int(const std::vector<int> &I,
                                                 int64 val) {
   auto launch_ctx = writer_->make_launch_context();
   set_kernel_args(I, snode_->num_active_indices, &launch_ctx);
-  launch_ctx.set_arg_int(snode_->num_active_indices, val);
+  launch_ctx.set_arg_int({snode_->num_active_indices}, val);
   prog_->synchronize();
-  (*writer_)(launch_ctx);
+  const auto &compiled_kernel_data = prog_->compile_kernel(
+      prog_->compile_config(), prog_->get_device_caps(), *writer_);
+  prog_->launch_kernel(compiled_kernel_data, launch_ctx);
+}
+
+// for int32 and int64
+void SNodeRwAccessorsBank::Accessors::write_uint(const std::vector<int> &I,
+                                                 uint64 val) {
+  auto launch_ctx = writer_->make_launch_context();
+  set_kernel_args(I, snode_->num_active_indices, &launch_ctx);
+  launch_ctx.set_arg_uint({snode_->num_active_indices}, val);
+  prog_->synchronize();
+  const auto &compiled_kernel_data = prog_->compile_kernel(
+      prog_->compile_config(), prog_->get_device_caps(), *writer_);
+  prog_->launch_kernel(compiled_kernel_data, launch_ctx);
 }
 
 int64 SNodeRwAccessorsBank::Accessors::read_int(const std::vector<int> &I) {
   prog_->synchronize();
   auto launch_ctx = reader_->make_launch_context();
   set_kernel_args(I, snode_->num_active_indices, &launch_ctx);
-  (*reader_)(launch_ctx);
+  const auto &compiled_kernel_data = prog_->compile_kernel(
+      prog_->compile_config(), prog_->get_device_caps(), *reader_);
+  prog_->launch_kernel(compiled_kernel_data, launch_ctx);
   prog_->synchronize();
-  auto ret = reader_->get_ret_int(0);
-  return ret;
+  return launch_ctx.get_struct_ret_int({0});
 }
 
 uint64 SNodeRwAccessorsBank::Accessors::read_uint(const std::vector<int> &I) {
-  return (uint64)read_int(I);
+  prog_->synchronize();
+  auto launch_ctx = reader_->make_launch_context();
+  set_kernel_args(I, snode_->num_active_indices, &launch_ctx);
+  const auto &compiled_kernel_data = prog_->compile_kernel(
+      prog_->compile_config(), prog_->get_device_caps(), *reader_);
+  prog_->launch_kernel(compiled_kernel_data, launch_ctx);
+  prog_->synchronize();
+  return launch_ctx.get_struct_ret_uint({0});
 }
 
-}  // namespace lang
-}  // namespace taichi
+}  // namespace taichi::lang

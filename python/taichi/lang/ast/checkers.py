@@ -1,7 +1,7 @@
 import ast
 
+from taichi.lang._wrap_inspect import getsourcefile, getsourcelines
 from taichi.lang.exception import TaichiSyntaxError
-from taichi.lang.shell import oinspect
 
 
 class KernelSimplicityASTChecker(ast.NodeVisitor):
@@ -34,8 +34,8 @@ class KernelSimplicityASTChecker(ast.NodeVisitor):
 
     def __init__(self, func):
         super().__init__()
-        self._func_file = oinspect.getsourcefile(func)
-        self._func_lineno = oinspect.getsourcelines(func)[1]
+        self._func_file = getsourcefile(func)
+        self._func_lineno = getsourcelines(func)[1]
         self._func_name = func.__name__
         self._scope_guards = []
 
@@ -53,7 +53,7 @@ class KernelSimplicityASTChecker(ast.NodeVisitor):
     def get_error_location(self, node):
         # -1 because ast's lineno is 1-based.
         lineno = self._func_lineno + node.lineno - 1
-        return f'file={self._func_file} kernel={self._func_name} line={lineno}'
+        return f"file={self._func_file} kernel={self._func_name} line={lineno}"
 
     @staticmethod
     def should_check(node):
@@ -70,9 +70,7 @@ class KernelSimplicityASTChecker(ast.NodeVisitor):
             return
 
         if not (self.top_level or self.current_scope.allows_more_stmt):
-            raise TaichiSyntaxError(
-                f'No more statements allowed, at {self.get_error_location(node)}'
-            )
+            raise TaichiSyntaxError(f"No more statements allowed, at {self.get_error_location(node)}")
         old_top_level = self.top_level
         if old_top_level:
             self._scope_guards.append(self.new_scope())

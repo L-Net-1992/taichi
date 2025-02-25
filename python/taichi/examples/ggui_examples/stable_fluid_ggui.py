@@ -19,7 +19,6 @@ dye_decay = 1 - 1 / (maxfps * time_c)
 force_radius = res / 2.0
 gravity = True
 debug = False
-paused = False
 
 arch = ti.vulkan if ti._lib.core.with_vulkan() else ti.cuda
 ti.init(arch=arch)
@@ -51,7 +50,7 @@ dyes_pair = TexPair(_dye_buffer, _new_dye_buffer)
 @ti.func
 def sample(qf, u, v):
     I = ti.Vector([int(u), int(v)])
-    I = max(0, min(res - 1, I))
+    I = ti.max(0, ti.min(res - 1, I))
     return qf[I]
 
 
@@ -78,13 +77,13 @@ def bilerp(vf, p):
 
 # 3rd order Runge-Kutta
 @ti.func
-def backtrace(vf: ti.template(), p, dt: ti.template()):
+def backtrace(vf: ti.template(), p, dt_: ti.template()):
     v1 = bilerp(vf, p)
-    p1 = p - 0.5 * dt * v1
+    p1 = p - 0.5 * dt_ * v1
     v2 = bilerp(vf, p1)
-    p2 = p - 0.75 * dt * v2
+    p2 = p - 0.75 * dt_ * v2
     v3 = bilerp(vf, p2)
-    p -= dt * ((2 / 9) * v1 + (1 / 3) * v2 + (4 / 9) * v3)
+    p -= dt_ * ((2 / 9) * v1 + (1 / 3) * v2 + (4 / 9) * v3)
     return p
 
 
@@ -97,9 +96,9 @@ def advect(vf: ti.template(), qf: ti.template(), new_qf: ti.template()):
 
 
 @ti.kernel
-def apply_impulse(vf: ti.template(), dyef: ti.template(),
-                  imp_data: ti.ext_arr()):
-    g_dir = -ti.Vector([0, 9.8]) * 300
+def apply_impulse(vf: ti.template(), dyef: ti.template(), imp_data: ti.types.ndarray()):
+    g_mag = 9.8 if gravity else 0.0
+    g_dir = -ti.Vector([0, g_mag]) * 300
     for i, j in vf:
         omx, omy = imp_data[2], imp_data[3]
         mdir = ti.Vector([imp_data[0], imp_data[1]])
@@ -117,8 +116,7 @@ def apply_impulse(vf: ti.template(), dyef: ti.template(),
         vf[i, j] = v + momentum
         # add dye
         if mdir.norm() > 0.5:
-            dc += ti.exp(-d2 * (4 / (res / 15)**2)) * ti.Vector(
-                [imp_data[4], imp_data[5], imp_data[6]])
+            dc += ti.exp(-d2 * (4 / (res / 15) ** 2)) * ti.Vector([imp_data[4], imp_data[5], imp_data[6]])
 
         dyef[i, j] = dc
 
@@ -182,8 +180,7 @@ def enhance_vorticity(vf: ti.template(), cf: ti.template()):
         cb = sample(cf, i, j - 1)
         ct = sample(cf, i, j + 1)
         cc = sample(cf, i, j)
-        force = ti.Vector([abs(ct) - abs(cb),
-                           abs(cl) - abs(cr)]).normalized(1e-3)
+        force = ti.Vector([abs(ct) - abs(cb), abs(cl) - abs(cr)]).normalized(1e-3)
         force *= curl_strength * cc
         vf[i, j] = min(max(vf[i, j] + force * dt, -1e3), 1e3)
 
@@ -211,10 +208,10 @@ def step(mouse_data):
     if debug:
         divergence(velocities_pair.cur)
         div_s = np.sum(velocity_divs.to_numpy())
-        print(f'divergence={div_s}')
+        print(f"divergence={div_s}")
 
 
-class MouseDataGen(object):
+class MouseDataGen:
     def __init__(self):
         self.prev_mouse = None
         self.prev_color = None
@@ -249,33 +246,41 @@ def reset():
     dyes_pair.cur.fill(0)
 
 
-window = ti.ui.Window('Stable Fluid', (res, res), vsync=True)
-canvas = window.get_canvas()
-md_gen = MouseDataGen()
+def main():
+    global curl_strength, debug
 
-while window.running:
-    if window.get_event(ti.ui.PRESS):
-        e = window.event
-        if e.key == ti.ui.ESCAPE:
-            break
-        elif e.key == 'r':
-            paused = False
-            reset()
-        elif e.key == 's':
-            if curl_strength:
-                curl_strength = 0
-            else:
-                curl_strength = 7
-        elif e.key == 'p':
-            paused = not paused
-        elif e.key == 'd':
-            debug = not debug
+    paused = False
+    window = ti.ui.Window("Stable Fluid", (res, res), vsync=True)
+    canvas = window.get_canvas()
+    md_gen = MouseDataGen()
 
-    # Debug divergence:
-    # print(max((abs(velocity_divs.to_numpy().reshape(-1)))))
+    while window.running:
+        if window.get_event(ti.ui.PRESS):
+            e = window.event
+            if e.key == ti.ui.ESCAPE:
+                break
+            elif e.key == "r":
+                paused = False
+                reset()
+            elif e.key == "s":
+                if curl_strength:
+                    curl_strength = 0
+                else:
+                    curl_strength = 7
+            elif e.key == "p":
+                paused = not paused
+            elif e.key == "d":
+                debug = not debug
 
-    if not paused:
-        mouse_data = md_gen(window)
-        step(mouse_data)
-    canvas.set_image(dyes_pair.cur)
-    window.show()
+        # Debug divergence:
+        # print(max((abs(velocity_divs.to_numpy().reshape(-1)))))
+
+        if not paused:
+            mouse_data = md_gen(window)
+            step(mouse_data)
+        canvas.set_image(dyes_pair.cur)
+        window.show()
+
+
+if __name__ == "__main__":
+    main()

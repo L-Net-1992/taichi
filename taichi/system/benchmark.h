@@ -8,7 +8,7 @@
 #include "taichi/common/interface.h"
 #include "taichi/system/timer.h"
 
-TI_NAMESPACE_BEGIN
+namespace taichi {
 
 class Benchmark : public Unit {
  protected:
@@ -17,11 +17,11 @@ class Benchmark : public Unit {
   int64 workload;
   bool returns_time;
 
-  virtual void setup(){};
+  virtual void setup() {};
 
   virtual void iterate() = 0;
 
-  virtual void finalize(){};
+  virtual void finalize() {};
 
  public:
   void initialize(const Config &config) override {
@@ -61,4 +61,4 @@ class Benchmark : public Unit {
 
 TI_INTERFACE(Benchmark)
 
-TI_NAMESPACE_END
+}  // namespace taichi

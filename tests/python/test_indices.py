@@ -1,3 +1,4 @@
+import pytest
 from taichi.lang.misc import get_host_arch_list
 
 import taichi as ti
@@ -37,20 +38,49 @@ def test_indices():
     assert get_field_addr(0, 1) + 4 == get_field_addr(1, 1)
 
 
-@test_utils.test(arch=get_host_arch_list())
-def test_float_as_index():
-    a = ti.field(ti.f32, (8, 5))
+@test_utils.test(arch=get_host_arch_list(), default_ip=ti.i64)
+def test_indices_i64():
+    n = 1024
+    val = ti.field(dtype=ti.i64, shape=n)
+    val.fill(1)
 
     @ti.kernel
-    def func():
-        i = 6.66
-        j = 3
-        I = ti.Vector([2, 1])
-        for _ in range(1):  # prevent constant fold
-            a[i, j] = 233
-            a[I + ti.Vector([1, 3.0])] = 666
+    def prefix_sum():
+        ti.loop_config(serialize=True)
+        for i in range(1, 1024):
+            val[i] += val[i - 1]
 
-    func()
+    prefix_sum()
+    for i in range(n):
+        assert val[i] == i + 1
 
-    assert a[6, 3] == 233
-    assert a[3, 4] == 666
+
+@test_utils.test()
+def test_indices_with_matrix():
+    grid_m = ti.field(dtype=ti.i32, shape=(10, 10))
+
+    @ti.kernel
+    def build_grid():
+        base = int(ti.Vector([2, 4]))
+        grid_m[base] = 100
+
+        grid_m[int(ti.Vector([1, 1]))] = 10
+
+    build_grid()
+
+    assert grid_m[1, 1] == 10
+    assert grid_m[2, 4] == 100
+
+
+@test_utils.test()
+def test_negative_valued_indices():
+    @ti.kernel
+    def foo(i: int):
+        x = ti.Vector([i, i + 1, i + 2])
+        print(x[:-1])
+
+    with pytest.raises(
+        ti.TaichiSyntaxError,
+        match="Negative indices are not supported in Taichi kernels.",
+    ):
+        foo(0)

@@ -3,14 +3,12 @@
 #ifdef TI_WITH_DX11
 
 #include "taichi/ir/ir_builder.h"
-#include "taichi/backends/dx/dx_device.h"
-#include "taichi/backends/dx/dx_info_queue.h"
-#include "taichi/backends/dx/dx_program.h"
-#include "taichi/system/memory_pool.h"
+#include "taichi/rhi/dx/dx_device.h"
+#include "taichi/rhi/dx/dx_info_queue.h"
+#include "taichi/runtime/program_impls/dx/dx_program.h"
 #include "tests/cpp/program/test_program.h"
 
-namespace taichi {
-namespace lang {
+namespace taichi::lang {
 namespace directx11 {
 
 TEST(Dx11DeviceCreationTest, CreateDeviceAndAllocateMemory) {
@@ -37,8 +35,13 @@ TEST(Dx11DeviceCreationTest, CreateDeviceAndAllocateMemory) {
 
   taichi::lang::Device::AllocParams params;
   params.size = 1048576;
-  const taichi::lang::DeviceAllocation device_alloc =
-      device->allocate_memory(params);
+  params.host_read = true;
+  params.host_write = true;
+  taichi::lang::DeviceAllocation device_alloc;
+  EXPECT_EQ(device->allocate_memory(params, &device_alloc), RhiResult::success);
+
+  // The purpose of the device_alloc_guard is to rule out double free
+  const taichi::lang::DeviceAllocationGuard device_alloc_guard(device_alloc);
   if (kD3d11DebugEnabled) {
     count1 = device->live_dx11_object_count();
     // Should have allocated an UAV and a Buffer, so 2 more objects.
@@ -46,14 +49,17 @@ TEST(Dx11DeviceCreationTest, CreateDeviceAndAllocateMemory) {
   }
 
   // Map to CPU, write some values, then check those values
-  void *mapped = device->map(device_alloc);
+  void *mapped;
+  EXPECT_TRUE(device->map(device_alloc, &mapped) ==
+              taichi::lang::RhiResult::success);
   int *mapped_int = reinterpret_cast<int *>(mapped);
   for (int i = 0; i < 100; i++) {
     mapped_int[i] = i;
   }
   device->unmap(device_alloc);
 
-  mapped = device->map(device_alloc);
+  EXPECT_TRUE(device->map(device_alloc, &mapped) ==
+              taichi::lang::RhiResult::success);
   mapped_int = reinterpret_cast<int *>(mapped);
   for (int i = 0; i < 100; i++) {
     EXPECT_EQ(mapped_int[i], i);
@@ -111,21 +117,22 @@ TEST(Dx11StreamTest, CommandListTest) {
       std::make_unique<directx11::Dx11Device>();
   std::unique_ptr<Dx11Stream> stream =
       std::make_unique<Dx11Stream>(device.get());
-  stream->new_command_list();
+  CommandList *cmdlist{nullptr};
+  EXPECT_EQ(stream->new_command_list(&cmdlist), RhiResult::success);
+  EXPECT_NE(cmdlist, nullptr);
 }
 
 TEST(Dx11ProgramTest, MaterializeRuntimeTest) {
   std::unique_ptr<directx11::Dx11Device> device =
       std::make_unique<directx11::Dx11Device>();
-  std::unique_ptr<MemoryPool> pool =
-      std::make_unique<MemoryPool>(Arch::dx11, device.get());
+
   std::unique_ptr<Dx11ProgramImpl> program =
       std::make_unique<Dx11ProgramImpl>(default_compile_config);
   /*
   This test needs allocate_memory because of the call stack here:
   Dx11ProgramImpl::materialize_runtime
-  - VkRuntime::VkRuntime
-     - VkRuntime::init_buffers
+  - GfxRuntime::GfxRuntime
+     - GfxRuntime::init_buffers
         - Dx11Device::allocate_memory_unique
         - Dx11Device::get_compute_stream
         - Dx11Stream::new_command_list
@@ -133,22 +140,23 @@ TEST(Dx11ProgramTest, MaterializeRuntimeTest) {
         - Dx11Stream::submit_synced
   */
   uint64_t *result_buffer;
-  program->materialize_runtime(pool.get(), nullptr, &result_buffer);
+  program->materialize_runtime(nullptr, &result_buffer);
 
   TestProgram test_prog;
-  test_prog.setup();
+  test_prog.setup(Arch::dx11);
 
   IRBuilder builder;
   auto *lhs = builder.get_int32(42);
 
   auto block = builder.extract_ir();
-  test_prog.prog()->config.arch = Arch::dx11;
   auto ker = std::make_unique<Kernel>(*test_prog.prog(), std::move(block));
-  program->compile(ker.get(), nullptr);
+  ker->finalize_rets();
+  ker->finalize_params();
+  program->get_kernel_compilation_manager().load_or_compile(
+      *program->config, program->get_device_caps(), *ker.get());
 }
 
 }  // namespace directx11
-}  // namespace lang
-}  // namespace taichi
+}  // namespace taichi::lang
 
 #endif

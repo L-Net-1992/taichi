@@ -32,10 +32,9 @@
 #define VK_USE_PLATFORM_WIN32_KHR 1
 #endif
 
-#include "taichi/backends/vulkan/vulkan_common.h"
-#if !defined(ANDROID)
-#include <GLFW/glfw3.h>
-#endif
+#include "taichi/rhi/vulkan/vulkan_common.h"
+#include "taichi/rhi/common/window_system.h"
+#include "taichi/common/filesystem.hpp"
 
 #include <stdarg.h>
 
@@ -44,47 +43,53 @@
 #include <glm/gtc/matrix_transform.hpp>
 #include <glm/gtc/type_ptr.hpp>
 
-#define TI_UI_NAMESPACE_BEGIN \
-  namespace taichi {          \
-  namespace ui {
+namespace taichi::ui {
 
-#define TI_UI_NAMESPACE_END \
-  }                         \
+#define RHI_VERIFY(rhi_call)                                    \
+  {                                                             \
+    taichi::lang::RhiResult r = rhi_call;                       \
+    TI_ASSERT_INFO(r == taichi::lang::RhiResult::success,       \
+                   "`{}` failed, error {}", #rhi_call, int(r)); \
   }
 
-TI_UI_NAMESPACE_BEGIN
-
-#if !defined(ANDROID)
-inline void initGLFW() {
-  if (!glfwInit()) {
-    printf("cannot initialize GLFW\n");
-    exit(EXIT_FAILURE);
-  }
-}
-
+#ifdef TI_WITH_GLFW
 inline GLFWwindow *create_glfw_window_(const std::string &name,
                                        int screenWidth,
                                        int screenHeight,
+                                       int window_pos_x,
+                                       int window_pos_y,
                                        bool vsync) {
-  initGLFW();
+  if (!taichi::lang::window_system::glfw_context_acquire()) {
+    printf("cannot initialize GLFW\n");
+    exit(EXIT_FAILURE);
+  }
   GLFWwindow *window;
 
+  glfwWindowHint(GLFW_VISIBLE, GLFW_FALSE);
   glfwWindowHint(GLFW_CLIENT_API, GLFW_NO_API);
-  glfwWindowHint(GLFW_VISIBLE, GLFW_TRUE);
 
   window = glfwCreateWindow(screenWidth, screenHeight, name.c_str(), nullptr,
                             nullptr);
 
   if (!window) {
-    glfwTerminate();
+    taichi::lang::window_system::glfw_context_release();
     exit(EXIT_FAILURE);
   }
 
+  // Reset the window hints to default
+  glfwDefaultWindowHints();
+
+  glfwSetWindowPos(window, window_pos_x, window_pos_y);
+
+  glfwShowWindow(window);
+  // Invalid for Vulkan
+  /*
   if (vsync) {
     glfwSwapInterval(1);
   } else {
     glfwSwapInterval(0);
   }
+  */
   return window;
 }
 
@@ -98,7 +103,7 @@ struct Keys {
   DEFINE_KEY(Return);
   DEFINE_KEY(Tab);
   DEFINE_KEY(BackSpace);
-  DEFINE_KEY(Space);
+  static inline const std::string Space = " ";
   DEFINE_KEY(Up);
   DEFINE_KEY(Down);
   DEFINE_KEY(Left);
@@ -120,7 +125,6 @@ inline std::unordered_map<std::string, int> get_keys_map() {
       {Keys::Tab, GLFW_KEY_TAB},
       {Keys::BackSpace, GLFW_KEY_BACKSPACE},
       {Keys::Space, GLFW_KEY_SPACE},
-      {" ", GLFW_KEY_SPACE},
       {Keys::Up, GLFW_KEY_UP},
       {Keys::Down, GLFW_KEY_DOWN},
       {Keys::Left, GLFW_KEY_LEFT},
@@ -180,31 +184,9 @@ inline std::string button_id_to_name(int id) {
 }
 #endif
 
-inline int next_power_of_2(int n) {
-  int count = 0;
-
-  if (n && !(n & (n - 1)))
-    return n;
-
-  while (n != 0) {
-    n >>= 1;
-    count += 1;
-  }
-
-  return 1 << count;
-}
-
-#define DEFINE_PROPERTY(Type, name)       \
-  Type name;                              \
-  void set_##name(const Type &new_name) { \
-    name = new_name;                      \
-  }                                       \
-  Type get_##name() {                     \
-    return name;                          \
-  }
-
 inline std::vector<char> read_file(const std::string &filename) {
-  std::ifstream file(filename, std::ios::ate | std::ios::binary);
+  std::ifstream file(std::filesystem::path{filename},
+                     std::ios::ate | std::ios::binary);
 
   if (!file.is_open()) {
     throw std::runtime_error(filename + " failed to open file!");
@@ -221,4 +203,4 @@ inline std::vector<char> read_file(const std::string &filename) {
   return buffer;
 }
 
-TI_UI_NAMESPACE_END
+}  // namespace taichi::ui

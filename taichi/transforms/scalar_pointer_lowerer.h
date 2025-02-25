@@ -4,8 +4,7 @@
 
 #include "taichi/ir/stmt_op_types.h"
 
-namespace taichi {
-namespace lang {
+namespace taichi::lang {
 
 class LinearizeStmt;
 class SNode;
@@ -31,8 +30,7 @@ class ScalarPointerLowerer {
                                 const std::vector<Stmt *> &indices,
                                 const SNodeOpType snode_op,
                                 const bool is_bit_vectorized,
-                                VecStatement *lowered,
-                                const bool packed);
+                                VecStatement *lowered);
 
   virtual ~ScalarPointerLowerer() = default;
   /**
@@ -68,12 +66,10 @@ class ScalarPointerLowerer {
   const SNodeOpType snode_op_;
   const bool is_bit_vectorized_;
   VecStatement *const lowered_;
-  const bool packed_;
 
  private:
   std::vector<SNode *> snodes_;
   int path_length_{0};
 };
 
-}  // namespace lang
-}  // namespace taichi
+}  // namespace taichi::lang

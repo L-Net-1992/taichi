@@ -3,11 +3,11 @@
 #include <string>
 #include <vector>
 
+#include "taichi/rhi/device.h"
 #include "taichi/common/core.h"
 #include "taichi/common/serialization.h"
 
-namespace taichi {
-namespace lang {
+namespace taichi::lang {
 namespace aot {
 
 struct CompiledFieldData {
@@ -44,6 +44,14 @@ struct BufferBind {
   TI_IO_DEF(buffer, binding);
 };
 
+struct TextureBind {
+  int arg_id;
+  int binding;
+  bool is_storage;
+
+  TI_IO_DEF(arg_id, binding, is_storage);
+};
+
 struct CompiledOffloadedTask {
   std::string type;
   std::string range_hint;
@@ -53,8 +61,15 @@ struct CompiledOffloadedTask {
   int gpu_block_size{0};
 
   std::vector<BufferBind> buffer_binds;
+  std::vector<TextureBind> texture_binds;
 
-  TI_IO_DEF(type, range_hint, name, source_path, gpu_block_size, buffer_binds);
+  TI_IO_DEF(type,
+            range_hint,
+            name,
+            source_path,
+            gpu_block_size,
+            buffer_binds,
+            texture_binds);
 };
 
 struct ScalarArg {
@@ -74,12 +89,14 @@ struct ArrayArg {
   std::size_t shape_offset_in_args_buf{0};
   // For Vulkan/OpenGL/Metal, this is the binding index
   int bind_index{0};
+  BufferFormat format{BufferFormat::unknown};
 
   TI_IO_DEF(dtype_name,
             field_dim,
             element_shape,
             shape_offset_in_args_buf,
-            bind_index);
+            bind_index,
+            format);
 };
 
 struct CompiledTaichiKernel {
@@ -105,6 +122,7 @@ struct ModuleData {
   std::unordered_map<std::string, CompiledTaichiKernel> kernels;
   std::unordered_map<std::string, CompiledTaichiKernel> kernel_tmpls;
   std::vector<aot::CompiledFieldData> fields;
+  std::map<std::string, uint32_t> required_caps;
 
   size_t root_buffer_size;
 
@@ -114,9 +132,8 @@ struct ModuleData {
     ts.write_to_file(path);
   }
 
-  TI_IO_DEF(kernels, kernel_tmpls, fields, root_buffer_size);
+  TI_IO_DEF(kernels, kernel_tmpls, fields, required_caps, root_buffer_size);
 };
 
 }  // namespace aot
-}  // namespace lang
-}  // namespace taichi
+}  // namespace taichi::lang

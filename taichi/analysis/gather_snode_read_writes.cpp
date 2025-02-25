@@ -4,7 +4,7 @@
 #include "taichi/ir/analysis.h"
 #include "taichi/ir/statements.h"
 
-TLANG_NAMESPACE_BEGIN
+namespace taichi::lang {
 
 namespace irpass::analysis {
 
@@ -28,12 +28,10 @@ gather_snode_read_writes(IRNode *root) {
     }
     if (ptr) {
       if (auto *global_ptr = ptr->cast<GlobalPtrStmt>()) {
-        for (auto &snode : global_ptr->snodes.data) {
-          if (read)
-            accessed.first.emplace(snode);
-          if (write)
-            accessed.second.emplace(snode);
-        }
+        if (read)
+          accessed.first.emplace(global_ptr->snode);
+        if (write)
+          accessed.second.emplace(global_ptr->snode);
       }
     }
     return false;
@@ -42,4 +40,4 @@ gather_snode_read_writes(IRNode *root) {
 }
 }  // namespace irpass::analysis
 
-TLANG_NAMESPACE_END
+}  // namespace taichi::lang

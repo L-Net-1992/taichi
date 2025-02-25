@@ -5,7 +5,7 @@ import taichi as ti
 from tests import test_utils
 
 
-@test_utils.test()
+@test_utils.test(exclude=[ti.amdgpu])
 def test_abs():
     x = ti.field(ti.f32)
 
@@ -72,14 +72,13 @@ def test_minmax():
         y[i] = N - i
         z[i] = i - 2 if i % 2 else i + 2
 
-    with pytest.warns(DeprecationWarning,
-                      match="Calling builtin function") as records:
-        func()
-    assert len(records) > 0
+    func()
 
     assert np.allclose(
         minimum.to_numpy(),
-        np.minimum(np.minimum(x.to_numpy(), y.to_numpy()), z.to_numpy()))
+        np.minimum(np.minimum(x.to_numpy(), y.to_numpy()), z.to_numpy()),
+    )
     assert np.allclose(
         maximum.to_numpy(),
-        np.maximum(np.maximum(x.to_numpy(), y.to_numpy()), z.to_numpy()))
+        np.maximum(np.maximum(x.to_numpy(), y.to_numpy()), z.to_numpy()),
+    )

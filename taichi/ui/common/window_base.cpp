@@ -1,15 +1,17 @@
 #include "taichi/ui/common/window_base.h"
+#include "taichi/rhi/common/window_system.h"
 
-TI_UI_NAMESPACE_BEGIN
+namespace taichi::ui {
 
 #define CHECK_WINDOW_SHOWING        \
   TI_ERROR_IF(!config_.show_window, \
               "show_window must be True to use this method")
 
-WindowBase ::WindowBase(AppConfig config) : config_(config) {
+WindowBase::WindowBase(AppConfig config) : config_(config) {
   if (config_.show_window) {
     glfw_window_ = create_glfw_window_(config_.name, config_.width,
-                                       config_.height, config_.vsync);
+                                       config_.height, config_.window_pos_x,
+                                       config_.window_pos_y, config_.vsync);
     glfwSetWindowUserPointer(glfw_window_, this);
     set_callbacks();
     last_record_time_ = glfwGetTime();
@@ -48,6 +50,10 @@ void WindowBase::set_callbacks() {
 }
 
 CanvasBase *WindowBase::get_canvas() {
+  return nullptr;
+}
+
+SceneBase *WindowBase::get_scene() {
   return nullptr;
 }
 
@@ -99,10 +105,8 @@ void WindowBase::set_is_running(bool value) {
 std::pair<float, float> WindowBase::get_cursor_pos() {
   CHECK_WINDOW_SHOWING;
   float x = input_handler_.last_x();
-  float y = input_handler_.last_y();
+  float y = 1.0 - input_handler_.last_y();
 
-  x = x / (float)config_.width;
-  y = (config_.height - y) / (float)config_.height;
   return std::make_pair(x, y);
 }
 
@@ -158,10 +162,11 @@ void WindowBase::set_current_event(const Event &event) {
 WindowBase::~WindowBase() {
   if (config_.show_window) {
     glfwDestroyWindow(glfw_window_);
+    taichi::lang::window_system::glfw_context_release();
   }
 }
 
-GuiBase *WindowBase::GUI() {
+GuiBase *WindowBase::gui() {
   return nullptr;
 }
 
@@ -193,4 +198,4 @@ void WindowBase::mouse_button_callback(GLFWwindow *glfw_window,
                                                modifier);
 }
 
-TI_UI_NAMESPACE_END
+}  // namespace taichi::ui

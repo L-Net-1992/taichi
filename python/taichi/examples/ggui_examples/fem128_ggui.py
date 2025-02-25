@@ -8,7 +8,7 @@ dt = 5e-5
 dx = 1 / N
 rho = 4e1
 NF = 2 * N**2  # number of faces
-NV = (N + 1)**2  # number of vertices
+NV = (N + 1) ** 2  # number of vertices
 E, nu = 4e4, 0.2  # Young's modulus and Poisson's ratio
 mu, lam = E / 2 / (1 + nu), E * nu / (1 + nu) / (1 - 2 * nu)  # Lame parameters
 ball_pos, ball_radius = ti.Vector([0.5, 0.0]), 0.31
@@ -50,8 +50,7 @@ def update_U():
 def advance():
     for i in range(NV):
         acc = -pos.grad[i] / (rho * dx**2)
-        g = gravity[None] * 0.8 + attractor_strength[None] * (
-            attractor_pos[None] - pos[i]).normalized(1e-5)
+        g = gravity[None] * 0.8 + attractor_strength[None] * (attractor_pos[None] - pos[i]).normalized(1e-5)
         vel[i] += dt * (acc + g * 40)
         vel[i] *= ti.exp(-dt * damping)
     for i in range(NV):
@@ -60,11 +59,13 @@ def advance():
         disp2 = disp.norm_sqr()
         if disp2 <= ball_radius**2:
             NoV = vel[i].dot(disp)
-            if NoV < 0: vel[i] -= NoV * disp / disp2
-        cond = pos[i] < 0 and vel[i] < 0 or pos[i] > 1 and vel[i] > 0
+            if NoV < 0:
+                vel[i] -= NoV * disp / disp2
+        cond = (pos[i] < 0) & (vel[i] < 0) | (pos[i] > 1) & (vel[i] > 0)
         # rect boundary condition:
         for j in ti.static(range(pos.n)):
-            if cond[j]: vel[i][j] = 0
+            if cond[j]:
+                vel[i][j] = 0
         pos[i] += dt * vel[i]
 
 
@@ -93,15 +94,15 @@ def init_mesh():
         f2v[k + 1] = [c, d, a]
 
 
-window = ti.ui.Window('FEM128', (512, 512))
+window = ti.ui.Window("FEM128", (512, 512))
 canvas = window.get_canvas()
 
 # rendering related fields
 vertexColors = ti.Vector.field(3, float, NV)
 vertexPositions = ti.Vector.field(2, float, NV)
 triangleIndices = ti.field(int, NF * 3)
-mouse_circle = ti.Vector.field(2, dtype=float, shape=(1, ))
-ball_circle = ti.Vector.field(2, dtype=float, shape=(1, ))
+mouse_circle = ti.Vector.field(2, dtype=float, shape=(1,))
+ball_circle = ti.Vector.field(2, dtype=float, shape=(1,))
 
 
 @ti.kernel
@@ -136,41 +137,43 @@ def render():
     canvas.circles(mouse_circle, color=(0.2, 0.4, 0.6), radius=0.02)
     canvas.circles(ball_circle, color=(0.4, 0.4, 0.4), radius=ball_radius)
 
-    canvas.triangles(vertexPositions,
-                     indices=triangleIndices,
-                     per_vertex_color=vertexColors)
+    canvas.triangles(vertexPositions, indices=triangleIndices, per_vertex_color=vertexColors)
     canvas.circles(vertexPositions, radius=0.003, color=(1, 0.6, 0.2))
 
 
-init_mesh()
-init_pos()
-gravity[None] = [0, -1]
+def main():
+    init_mesh()
+    init_pos()
+    gravity[None] = [0, -1]
 
-print(
-    "[Hint] Use WSAD/arrow keys to control gravity. Use left/right mouse bottons to attract/repel. Press R to reset."
-)
-while window.running:
-    for e in window.get_events(ti.ui.PRESS):
-        if e.key == ti.ui.ESCAPE:
-            window.running = False
-        elif e.key == 'r':
-            init_pos()
-        elif e.key in ('a', ti.ui.LEFT):
-            gravity[None] = [-1, 0]
-        elif e.key in ('d', ti.ui.RIGHT):
-            gravity[None] = [+1, 0]
-        elif e.key in ('s', ti.ui.DOWN):
-            gravity[None] = [0, -1]
-        elif e.key in ('w', ti.ui.UP):
-            gravity[None] = [0, +1]
+    print(
+        "[Hint] Use WSAD/arrow keys to control gravity. Use left/right mouse buttons to attract/repel. Press R to reset."
+    )
+    while window.running:
+        for e in window.get_events(ti.ui.PRESS):
+            if e.key == ti.ui.ESCAPE:
+                window.running = False
+            elif e.key == "r":
+                init_pos()
+            elif e.key in ("a", ti.ui.LEFT):
+                gravity[None] = [-1, 0]
+            elif e.key in ("d", ti.ui.RIGHT):
+                gravity[None] = [+1, 0]
+            elif e.key in ("s", ti.ui.DOWN):
+                gravity[None] = [0, -1]
+            elif e.key in ("w", ti.ui.UP):
+                gravity[None] = [0, +1]
 
-    mouse_pos = window.get_cursor_pos()
-    attractor_pos[None] = mouse_pos
-    attractor_strength[None] = window.is_pressed(
-        ti.ui.LMB) - window.is_pressed(ti.ui.RMB)
-    for i in range(50):
-        with ti.Tape(loss=U):
-            update_U()
-        advance()
-    render()
-    window.show()
+        mouse_pos = window.get_cursor_pos()
+        attractor_pos[None] = mouse_pos
+        attractor_strength[None] = window.is_pressed(ti.ui.LMB) - window.is_pressed(ti.ui.RMB)
+        for i in range(50):
+            with ti.ad.Tape(loss=U):
+                update_U()
+            advance()
+        render()
+        window.show()
+
+
+if __name__ == "__main__":
+    main()

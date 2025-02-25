@@ -3,7 +3,7 @@ from tests import test_utils
 
 
 # such small block_dim will cause grid_dim too large for OpenGL...
-@test_utils.test(exclude=ti.opengl)
+@test_utils.test(exclude=[ti.opengl, ti.gles])
 def test_parallel_range_for():
     n = 1024 * 1024
     val = ti.field(ti.i32, shape=(n))
@@ -37,7 +37,7 @@ def test_serial_for():
     assert foo() == 50
 
 
-@test_utils.test(exclude=ti.opengl)
+@test_utils.test(exclude=[ti.opengl, ti.gles])
 def test_loop_config_parallel_range_for():
     n = 1024 * 1024
     val = ti.field(ti.i32, shape=(n))
@@ -69,3 +69,21 @@ def test_loop_config_serial_for():
         return a
 
     assert foo() == 50
+
+
+@test_utils.test(arch=[ti.cpu])
+def test_loop_config_block_dim_adaptive():
+    n = 4096
+    val = ti.field(ti.i32, shape=(n))
+
+    @ti.kernel
+    def fill():
+        ti.loop_config(block_dim_adaptive=False)
+        for i in range(n):
+            val[i] = i
+
+    fill()
+    # To speed up
+    val_np = val.to_numpy()
+    for i in range(n):
+        assert val_np[i] == i

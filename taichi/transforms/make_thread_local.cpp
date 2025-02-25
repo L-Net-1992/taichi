@@ -10,7 +10,7 @@
 #include "taichi/ir/visitors.h"
 #include "taichi/system/profiler.h"
 
-TLANG_NAMESPACE_BEGIN
+namespace taichi::lang {
 
 namespace {
 
@@ -21,7 +21,8 @@ std::vector<std::pair<T *, AtomicOpType>> find_global_reduction_destinations(
     OffloadedStmt *offload,
     const std::function<bool(T *)> &dest_checker) {
   static_assert(std::is_same_v<T, GlobalPtrStmt> ||
-                std::is_same_v<T, GlobalTemporaryStmt>);
+                std::is_same_v<T, GlobalTemporaryStmt> ||
+                std::is_same_v<T, MatrixPtrStmt>);
   // Gather all atomic add/sub/max/min destinations and record corresponding op
   // type on the first appearance of a destination.
   // Only one op type will be allowed on one destination (add/sub is an
@@ -76,6 +77,8 @@ std::vector<std::pair<T *, AtomicOpType>> find_global_reduction_destinations(
             }
           }
           for (auto &op : stmt->get_operands()) {
+            if (op == nullptr)
+              continue;
             // Make sure the values of related atomic operations are not used.
             if (auto atomic = op->cast<AtomicOpStmt>()) {
               if (irpass::analysis::maybe_same_address(atomic->dest,
@@ -87,7 +90,6 @@ std::vector<std::pair<T *, AtomicOpType>> find_global_reduction_destinations(
           return false;  // Now we are sure the statement is not related to the
                          // destination
         });
-    TI_ASSERT(dest.first->width() == 1);
     if (related_global_mem_ops.empty() && dest_checker(dest.first)) {
       valid_reduction_values.push_back(dest);
     }
@@ -106,17 +108,25 @@ void make_thread_local_offload(OffloadedStmt *offload) {
         offload, [](GlobalPtrStmt *dest) {
           // We can only optimized reductions to global ptrs with form like
           // loss[None] (0-D fields) for now.
-          // No TLS on CustomInt/FloatType.
-          return (dest->snodes[0]->type == SNodeType::place) &&
+          // No TLS on quant types.
+          return (dest->snode->type == SNodeType::place) &&
                  dest->indices.empty() &&
-                 dest->snodes[0]->dt->is<PrimitiveType>();
+                 (dest->ret_type.ptr_removed()->is<PrimitiveType>() ||
+                  dest->ret_type.ptr_removed()->is<TensorType>());
         });
     auto valid_global_tmps =
         find_global_reduction_destinations<GlobalTemporaryStmt>(
             offload, [](auto *) { return true; });
+    // gather dest of MatrixPtrStmt(GlobalPtrStmt, offset)
+    auto valid_matrix_ptrs = find_global_reduction_destinations<MatrixPtrStmt>(
+        offload,
+        [](MatrixPtrStmt *dest) { return dest->origin->is<GlobalPtrStmt>(); });
+
     std::copy(valid_global_ptrs.begin(), valid_global_ptrs.end(),
               std::back_inserter(valid_reduction_values));
     std::copy(valid_global_tmps.begin(), valid_global_tmps.end(),
+              std::back_inserter(valid_reduction_values));
+    std::copy(valid_matrix_ptrs.begin(), valid_matrix_ptrs.end(),
               std::back_inserter(valid_reduction_values));
   }
 
@@ -132,23 +142,33 @@ void make_thread_local_offload(OffloadedStmt *offload) {
     {
       if (offload->tls_prologue == nullptr) {
         offload->tls_prologue = std::make_unique<Block>();
-        offload->tls_prologue->parent_stmt = offload;
+        offload->tls_prologue->set_parent_stmt(offload);
       }
 
       // ensure alignment
       tls_offset += (dtype_size - tls_offset % dtype_size) % dtype_size;
 
       auto tls_ptr = offload->tls_prologue->push_back<ThreadLocalPtrStmt>(
-          tls_offset,
-          TypeFactory::create_vector_or_scalar_type(1, data_type, true));
+          tls_offset, TypeFactory::get_instance().get_pointer_type(data_type));
 
       auto zero = offload->tls_prologue->insert(
-          std::make_unique<ConstStmt>(dest.second == AtomicOpType::max
-                                          ? get_min_value(data_type)
-                                          : dest.second == AtomicOpType::min
-                                                ? get_max_value(data_type)
-                                                : TypedConstant(data_type, 0)),
+          std::make_unique<ConstStmt>(
+              dest.second == AtomicOpType::max
+                  ? get_min_value(data_type.get_element_type())
+              : dest.second == AtomicOpType::min
+                  ? get_max_value(data_type.get_element_type())
+                  : TypedConstant(data_type.get_element_type(), 0)),
           -1);
+
+      if (data_type->is<TensorType>()) {
+        auto tensor_type = data_type->as<TensorType>();
+        int num_elements = tensor_type->get_num_elements();
+
+        std::vector<Stmt *> zero_values(num_elements, zero);
+        zero = offload->tls_prologue->push_back<MatrixInitStmt>(zero_values);
+        zero->ret_type = data_type;
+      }
+
       // Zero-fill
       // TODO: do not use GlobalStore for TLS ptr.
       offload->tls_prologue->push_back<GlobalStoreStmt>(tls_ptr, zero);
@@ -160,7 +180,7 @@ void make_thread_local_offload(OffloadedStmt *offload) {
       auto tls_ptr = offload->body->insert(
           Stmt::make<ThreadLocalPtrStmt>(
               tls_offset,
-              TypeFactory::create_vector_or_scalar_type(1, data_type, true)),
+              TypeFactory::get_instance().get_pointer_type(data_type)),
           0);
       dest.first->replace_usages_with(tls_ptr);
     }
@@ -170,11 +190,10 @@ void make_thread_local_offload(OffloadedStmt *offload) {
     {
       if (offload->tls_epilogue == nullptr) {
         offload->tls_epilogue = std::make_unique<Block>();
-        offload->tls_epilogue->parent_stmt = offload;
+        offload->tls_epilogue->set_parent_stmt(offload);
       }
       auto tls_ptr = offload->tls_epilogue->push_back<ThreadLocalPtrStmt>(
-          tls_offset,
-          TypeFactory::create_vector_or_scalar_type(1, data_type, true));
+          tls_offset, TypeFactory::get_instance().get_pointer_type(data_type));
       // TODO: do not use global load from TLS.
       auto tls_load = offload->tls_epilogue->push_back<GlobalLoadStmt>(tls_ptr);
       auto global_ptr = offload->tls_epilogue->insert(
@@ -212,4 +231,4 @@ void make_thread_local(IRNode *root, const CompileConfig &config) {
 
 }  // namespace irpass
 
-TLANG_NAMESPACE_END
+}  // namespace taichi::lang

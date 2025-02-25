@@ -1,11 +1,15 @@
 // TODO: gradually cppize statements.h
 #include "taichi/ir/statements.h"
 #include "taichi/util/bit.h"
+#include "taichi/program/kernel.h"
+#include "taichi/program/function.h"
 
-TLANG_NAMESPACE_BEGIN
+namespace taichi::lang {
 
-UnaryOpStmt::UnaryOpStmt(UnaryOpType op_type, Stmt *operand)
-    : op_type(op_type), operand(operand) {
+UnaryOpStmt::UnaryOpStmt(UnaryOpType op_type,
+                         Stmt *operand,
+                         const DebugInfo &dbg_info)
+    : Stmt(dbg_info), op_type(op_type), operand(operand) {
   TI_ASSERT(!operand->is<AllocaStmt>());
   cast_type = PrimitiveType::unknown;
   TI_STMT_REG_FIELDS;
@@ -32,107 +36,113 @@ bool UnaryOpStmt::same_operation(UnaryOpStmt *o) const {
   return false;
 }
 
-ExternalPtrStmt::ExternalPtrStmt(const LaneAttribute<Stmt *> &base_ptrs,
-                                 const std::vector<Stmt *> &indices)
-    : base_ptrs(base_ptrs), indices(indices) {
-  DataType dt = PrimitiveType::f32;
-  for (int i = 0; i < (int)base_ptrs.size(); i++) {
-    TI_ASSERT(base_ptrs[i] != nullptr);
-    TI_ASSERT(base_ptrs[i]->is<ArgLoadStmt>());
-  }
-  TI_ASSERT(base_ptrs.size() == 1);
-  element_type() = dt;
+ExternalPtrStmt::ExternalPtrStmt(Stmt *base_ptr,
+                                 const std::vector<Stmt *> &indices,
+                                 bool is_grad,
+                                 BoundaryMode boundary)
+    : base_ptr(base_ptr),
+      indices(indices),
+      is_grad(is_grad),
+      boundary(boundary) {
+  ndim = indices.size();
+  TI_ASSERT(base_ptr != nullptr);
+  TI_ASSERT(base_ptr->is<ArgLoadStmt>());
   TI_STMT_REG_FIELDS;
 }
 
-ExternalPtrStmt::ExternalPtrStmt(const LaneAttribute<Stmt *> &base_ptrs,
+ExternalPtrStmt::ExternalPtrStmt(Stmt *base_ptr,
                                  const std::vector<Stmt *> &indices,
+                                 int ndim,
                                  const std::vector<int> &element_shape,
-                                 int element_dim)
-    : ExternalPtrStmt(base_ptrs, indices) {
+                                 bool is_grad,
+                                 BoundaryMode boundary)
+    : ExternalPtrStmt(base_ptr, indices, is_grad, boundary) {
   this->element_shape = element_shape;
-  this->element_dim = element_dim;
+  this->ndim = ndim;
 }
 
-GlobalPtrStmt::GlobalPtrStmt(const LaneAttribute<SNode *> &snodes,
+GlobalPtrStmt::GlobalPtrStmt(SNode *snode,
                              const std::vector<Stmt *> &indices,
-                             bool activate)
-    : snodes(snodes),
+                             bool activate,
+                             bool is_cell_access,
+                             const DebugInfo &dbg_info)
+    : Stmt(dbg_info),
+      snode(snode),
       indices(indices),
       activate(activate),
+      is_cell_access(is_cell_access),
       is_bit_vectorized(false) {
-  for (int i = 0; i < (int)snodes.size(); i++) {
-    TI_ASSERT(snodes[i] != nullptr);
-    TI_ASSERT(snodes[0]->dt == snodes[i]->dt);
-  }
-  TI_ASSERT(snodes.size() == 1);
-  element_type() = snodes[0]->dt;
+  TI_ASSERT(snode != nullptr);
+  element_type() = snode->dt;
   TI_STMT_REG_FIELDS;
 }
 
-bool GlobalPtrStmt::is_element_wise(const SNode *snode) const {
-  if (snode == nullptr) {
-    // check every SNode when "snode" is nullptr
-    for (const auto &snode_i : snodes.data) {
-      if (!is_element_wise(snode_i)) {
-        return false;
-      }
-    }
-    return true;
-  }
-  // check if this statement is element-wise on a specific SNode, i.e., argument
-  // "snode"
-  for (int i = 0; i < (int)indices.size(); i++) {
-    if (auto loop_index_i = indices[i]->cast<LoopIndexStmt>();
-        !(loop_index_i && loop_index_i->loop->is<OffloadedStmt>() &&
-          loop_index_i->index == snode->physical_index_position[i])) {
-      return false;
-    }
-  }
-  return true;
+MatrixOfGlobalPtrStmt::MatrixOfGlobalPtrStmt(const std::vector<SNode *> &snodes,
+                                             const std::vector<Stmt *> &indices,
+                                             bool dynamic_indexable,
+                                             int dynamic_index_stride,
+                                             DataType dt,
+                                             bool activate)
+    : snodes(snodes),
+      indices(indices),
+      dynamic_indexable(dynamic_indexable),
+      dynamic_index_stride(dynamic_index_stride),
+      activate(activate) {
+  ret_type = dt;
+  TI_STMT_REG_FIELDS;
 }
 
-bool GlobalPtrStmt::covers_snode(const SNode *snode) const {
-  // Check if the addresses of this statement all over the loop cover
-  // all active indices of the snode.
-  for (auto &index : indices) {
-    if (auto loop_unique = index->cast<LoopUniqueStmt>()) {
-      if (loop_unique->covers_snode(snode))
-        return true;
-    }
-  }
-  return is_element_wise(snode);
+MatrixOfMatrixPtrStmt::MatrixOfMatrixPtrStmt(const std::vector<Stmt *> &stmts,
+                                             DataType dt)
+    : stmts(stmts) {
+  ret_type = dt;
+  ret_type.set_is_pointer(true);
+  TI_STMT_REG_FIELDS;
 }
 
-PtrOffsetStmt::PtrOffsetStmt(Stmt *origin_input, Stmt *offset_input) {
+MatrixPtrStmt::MatrixPtrStmt(Stmt *origin_input,
+                             Stmt *offset_input,
+                             const DebugInfo &dbg_info) {
   origin = origin_input;
   offset = offset_input;
-  if (origin->is<AllocaStmt>()) {
-    TI_ASSERT(origin->cast<AllocaStmt>()->ret_type->is<TensorType>());
-    auto tensor_type = origin->cast<AllocaStmt>()->ret_type->cast<TensorType>();
+  this->dbg_info = dbg_info;
+
+  if (origin->is<AllocaStmt>() || origin->is<GlobalTemporaryStmt>() ||
+      origin->is<ExternalPtrStmt>() || origin->is<MatrixOfGlobalPtrStmt>() ||
+      origin->is<MatrixOfMatrixPtrStmt>() || origin->is<ThreadLocalPtrStmt>() ||
+      origin->is<MatrixPtrStmt>()) {
+    auto tensor_type = origin->ret_type.ptr_removed()->cast<TensorType>();
+    TI_ASSERT(tensor_type != nullptr);
     element_type() = tensor_type->get_element_type();
     element_type().set_is_pointer(true);
-  } else if (origin->is<GlobalTemporaryStmt>()) {
-    TI_ASSERT(origin->cast<GlobalTemporaryStmt>()->ret_type->is<TensorType>());
-    auto tensor_type =
-        origin->cast<GlobalTemporaryStmt>()->ret_type->cast<TensorType>();
-    element_type() = tensor_type->get_element_type();
+  } else if (origin->is<GlobalPtrStmt>() || origin->is<GetChStmt>()) {
+    element_type() = origin->ret_type.ptr_removed().get_element_type();
     element_type().set_is_pointer(true);
-  } else if (origin->is<GlobalPtrStmt>()) {
-    element_type() = origin->cast<GlobalPtrStmt>()->ret_type;
+  } else if (origin->is<AdStackLoadTopStmt>()) {
+    TI_ASSERT(origin->as<AdStackLoadTopStmt>()->return_ptr == true);
+    element_type() = origin->ret_type.get_element_type();
+    element_type().set_is_pointer(true);
   } else {
     TI_ERROR(
-        "PtrOffsetStmt must be used for AllocaStmt / GlobalTemporaryStmt "
-        "(locally) or GlobalPtrStmt (globally).")
+        "MatrixPtrStmt must be used for AllocaStmt / GlobalTemporaryStmt "
+        "(locally) or GlobalPtrStmt / MatrixOfGlobalPtrStmt / ExternalPtrStmt "
+        "(globally).")
   }
   TI_STMT_REG_FIELDS;
+}
+
+bool MatrixPtrStmt::common_statement_eliminable() const {
+  Callable *callable = get_callable();
+  TI_ASSERT(callable != nullptr);
+  return (callable->autodiff_mode == AutodiffMode::kNone);
 }
 
 SNodeOpStmt::SNodeOpStmt(SNodeOpType op_type,
                          SNode *snode,
                          Stmt *ptr,
-                         Stmt *val)
-    : op_type(op_type), snode(snode), ptr(ptr), val(val) {
+                         Stmt *val,
+                         const DebugInfo &dbg_info)
+    : Stmt(dbg_info), op_type(op_type), snode(snode), ptr(ptr), val(val) {
   element_type() = PrimitiveType::i32;
   TI_STMT_REG_FIELDS;
 }
@@ -143,17 +153,30 @@ bool SNodeOpStmt::activation_related(SNodeOpType op) {
 }
 
 bool SNodeOpStmt::need_activation(SNodeOpType op) {
-  return op == SNodeOpType::activate || op == SNodeOpType::append;
+  return op == SNodeOpType::activate || op == SNodeOpType::append ||
+         op == SNodeOpType::allocate;
 }
 
-ExternalTensorShapeAlongAxisStmt::ExternalTensorShapeAlongAxisStmt(int axis,
-                                                                   int arg_id)
-    : axis(axis), arg_id(arg_id) {
+ExternalTensorShapeAlongAxisStmt::ExternalTensorShapeAlongAxisStmt(
+    int axis,
+    const std::vector<int> &arg_id,
+    const DebugInfo &dbg_info)
+    : Stmt(dbg_info), axis(axis), arg_id(arg_id) {
   TI_STMT_REG_FIELDS;
 }
 
-LoopUniqueStmt::LoopUniqueStmt(Stmt *input, const std::vector<SNode *> &covers)
-    : input(input) {
+ExternalTensorBasePtrStmt::ExternalTensorBasePtrStmt(
+    const std::vector<int> &arg_id,
+    bool is_grad,
+    const DebugInfo &dbg_info)
+    : Stmt(dbg_info), arg_id(arg_id), is_grad(is_grad) {
+  TI_STMT_REG_FIELDS;
+}
+
+LoopUniqueStmt::LoopUniqueStmt(Stmt *input,
+                               const std::vector<SNode *> &covers,
+                               const DebugInfo &dbg_info)
+    : Stmt(dbg_info), input(input) {
   for (const auto &sn : covers) {
     if (sn->is_place()) {
       TI_INFO(
@@ -168,75 +191,26 @@ LoopUniqueStmt::LoopUniqueStmt(Stmt *input, const std::vector<SNode *> &covers)
   TI_STMT_REG_FIELDS;
 }
 
-bool LoopUniqueStmt::covers_snode(const SNode *snode) const {
-  if (snode->is_place()) {
-    return covers.count(snode->parent->id) > 0;
-  } else {
-    TI_NOT_IMPLEMENTED
-  }
-}
-
-Stmt *LocalLoadStmt::previous_store_or_alloca_in_block() {
-  int position = parent->locate(this);
-  // TI_ASSERT(width() == 1);
-  // TI_ASSERT(this->ptr[0].offset == 0);
-  for (int i = position - 1; i >= 0; i--) {
-    if (parent->statements[i]->is<LocalStoreStmt>()) {
-      auto store = parent->statements[i]->as<LocalStoreStmt>();
-      // TI_ASSERT(store->width() == 1);
-      if (store->dest == this->src[0].var) {
-        // found
-        return store;
-      }
-    } else if (parent->statements[i]->is<AllocaStmt>()) {
-      auto alloca = parent->statements[i]->as<AllocaStmt>();
-      // TI_ASSERT(alloca->width() == 1);
-      if (alloca == this->src[0].var) {
-        return alloca;
-      }
-    }
-  }
-  return nullptr;
-}
-
-bool LocalLoadStmt::same_source() const {
-  for (int i = 1; i < (int)src.size(); i++) {
-    if (src[i].var != src[0].var)
-      return false;
-  }
-  return true;
-}
-
-bool LocalLoadStmt::has_source(Stmt *alloca) const {
-  for (int i = 0; i < width(); i++) {
-    if (src[i].var == alloca)
-      return true;
-  }
-  return false;
-}
-
-IfStmt::IfStmt(Stmt *cond)
-    : cond(cond), true_mask(nullptr), false_mask(nullptr) {
+IfStmt::IfStmt(Stmt *cond, const DebugInfo &dbg_info)
+    : Stmt(dbg_info), cond(cond) {
   TI_STMT_REG_FIELDS;
 }
 
 void IfStmt::set_true_statements(std::unique_ptr<Block> &&new_true_statements) {
   true_statements = std::move(new_true_statements);
   if (true_statements)
-    true_statements->parent_stmt = this;
+    true_statements->set_parent_stmt(this);
 }
 
 void IfStmt::set_false_statements(
     std::unique_ptr<Block> &&new_false_statements) {
   false_statements = std::move(new_false_statements);
   if (false_statements)
-    false_statements->parent_stmt = this;
+    false_statements->set_parent_stmt(this);
 }
 
 std::unique_ptr<Stmt> IfStmt::clone() const {
   auto new_stmt = std::make_unique<IfStmt>(cond);
-  new_stmt->true_mask = true_mask;
-  new_stmt->false_mask = false_mask;
   if (true_statements)
     new_stmt->set_true_statements(true_statements->clone());
   if (false_statements)
@@ -244,14 +218,10 @@ std::unique_ptr<Stmt> IfStmt::clone() const {
   return new_stmt;
 }
 
-std::unique_ptr<ConstStmt> ConstStmt::copy() {
-  return std::make_unique<ConstStmt>(val);
-}
-
 RangeForStmt::RangeForStmt(Stmt *begin,
                            Stmt *end,
                            std::unique_ptr<Block> &&body,
-                           int bit_vectorize,
+                           bool is_bit_vectorized,
                            int num_cpu_threads,
                            int block_dim,
                            bool strictly_serialized,
@@ -259,19 +229,19 @@ RangeForStmt::RangeForStmt(Stmt *begin,
     : begin(begin),
       end(end),
       body(std::move(body)),
-      bit_vectorize(bit_vectorize),
+      is_bit_vectorized(is_bit_vectorized),
       num_cpu_threads(num_cpu_threads),
       block_dim(block_dim),
       strictly_serialized(strictly_serialized),
       range_hint(range_hint) {
   reversed = false;
-  this->body->parent_stmt = this;
+  this->body->set_parent_stmt(this);
   TI_STMT_REG_FIELDS;
 }
 
 std::unique_ptr<Stmt> RangeForStmt::clone() const {
   auto new_stmt = std::make_unique<RangeForStmt>(
-      begin, end, body->clone(), bit_vectorize, num_cpu_threads, block_dim,
+      begin, end, body->clone(), is_bit_vectorized, num_cpu_threads, block_dim,
       strictly_serialized);
   new_stmt->reversed = reversed;
   return new_stmt;
@@ -279,21 +249,21 @@ std::unique_ptr<Stmt> RangeForStmt::clone() const {
 
 StructForStmt::StructForStmt(SNode *snode,
                              std::unique_ptr<Block> &&body,
-                             int bit_vectorize,
+                             bool is_bit_vectorized,
                              int num_cpu_threads,
                              int block_dim)
     : snode(snode),
       body(std::move(body)),
-      bit_vectorize(bit_vectorize),
+      is_bit_vectorized(is_bit_vectorized),
       num_cpu_threads(num_cpu_threads),
       block_dim(block_dim) {
-  this->body->parent_stmt = this;
+  this->body->set_parent_stmt(this);
   TI_STMT_REG_FIELDS;
 }
 
 std::unique_ptr<Stmt> StructForStmt::clone() const {
   auto new_stmt = std::make_unique<StructForStmt>(
-      snode, body->clone(), bit_vectorize, num_cpu_threads, block_dim);
+      snode, body->clone(), is_bit_vectorized, num_cpu_threads, block_dim);
   new_stmt->mem_access_opt = mem_access_opt;
   return new_stmt;
 }
@@ -301,23 +271,23 @@ std::unique_ptr<Stmt> StructForStmt::clone() const {
 MeshForStmt::MeshForStmt(mesh::Mesh *mesh,
                          mesh::MeshElementType element_type,
                          std::unique_ptr<Block> &&body,
-                         int bit_vectorize,
+                         bool is_bit_vectorized,
                          int num_cpu_threads,
                          int block_dim)
     : mesh(mesh),
       body(std::move(body)),
-      bit_vectorize(bit_vectorize),
+      is_bit_vectorized(is_bit_vectorized),
       num_cpu_threads(num_cpu_threads),
       block_dim(block_dim),
       major_from_type(element_type) {
-  this->body->parent_stmt = this;
+  this->body->set_parent_stmt(this);
   TI_STMT_REG_FIELDS;
 }
 
 std::unique_ptr<Stmt> MeshForStmt::clone() const {
-  auto new_stmt =
-      std::make_unique<MeshForStmt>(mesh, major_from_type, body->clone(),
-                                    bit_vectorize, num_cpu_threads, block_dim);
+  auto new_stmt = std::make_unique<MeshForStmt>(
+      mesh, major_from_type, body->clone(), is_bit_vectorized, num_cpu_threads,
+      block_dim);
   new_stmt->major_to_types = major_to_types;
   new_stmt->minor_relation_types = minor_relation_types;
   new_stmt->mem_access_opt = mem_access_opt;
@@ -329,9 +299,22 @@ FuncCallStmt::FuncCallStmt(Function *func, const std::vector<Stmt *> &args)
   TI_STMT_REG_FIELDS;
 }
 
+stmt_refs FuncCallStmt::get_store_destination() const {
+  std::vector<Stmt *> ret;
+  for (auto &arg : args) {
+    if (auto ref = arg->cast<ReferenceStmt>()) {
+      ret.push_back(ref->var);
+    } else if (arg->ret_type.is_pointer()) {
+      ret.push_back(arg);
+    }
+  }
+  ret.insert(ret.end(), func->store_dests.begin(), func->store_dests.end());
+  return ret;
+}
+
 WhileStmt::WhileStmt(std::unique_ptr<Block> &&body)
     : mask(nullptr), body(std::move(body)) {
-  this->body->parent_stmt = this;
+  this->body->set_parent_stmt(this);
   TI_STMT_REG_FIELDS;
 }
 
@@ -341,19 +324,39 @@ std::unique_ptr<Stmt> WhileStmt::clone() const {
   return new_stmt;
 }
 
-GetChStmt::GetChStmt(Stmt *input_ptr, int chid, bool is_bit_vectorized)
-    : input_ptr(input_ptr), chid(chid), is_bit_vectorized(is_bit_vectorized) {
+GetChStmt::GetChStmt(Stmt *input_ptr,
+                     int chid,
+                     bool is_bit_vectorized,
+                     const DebugInfo &dbg_info)
+    : Stmt(dbg_info),
+      input_ptr(input_ptr),
+      chid(chid),
+      is_bit_vectorized(is_bit_vectorized) {
   TI_ASSERT(input_ptr->is<SNodeLookupStmt>());
   input_snode = input_ptr->as<SNodeLookupStmt>()->snode;
   output_snode = input_snode->ch[chid].get();
   TI_STMT_REG_FIELDS;
 }
 
-OffloadedStmt::OffloadedStmt(TaskType task_type, Arch arch)
-    : task_type(task_type), device(arch) {
+GetChStmt::GetChStmt(Stmt *input_ptr,
+                     SNode *snode,
+                     int chid,
+                     bool is_bit_vectorized,
+                     const DebugInfo &dbg_info)
+    : Stmt(dbg_info),
+      input_ptr(input_ptr),
+      chid(chid),
+      is_bit_vectorized(is_bit_vectorized) {
+  input_snode = snode;
+  output_snode = input_snode->ch[chid].get();
+  TI_STMT_REG_FIELDS;
+}
+
+OffloadedStmt::OffloadedStmt(TaskType task_type, Arch arch, Kernel *kernel)
+    : kernel_(kernel), task_type(task_type), device(arch) {
   if (has_body()) {
     body = std::make_unique<Block>();
-    body->parent_stmt = this;
+    body->set_parent_stmt(this);
   }
   TI_STMT_REG_FIELDS;
 }
@@ -384,7 +387,7 @@ std::string OffloadedStmt::task_type_name(TaskType tt) {
 }
 
 std::unique_ptr<Stmt> OffloadedStmt::clone() const {
-  auto new_stmt = std::make_unique<OffloadedStmt>(task_type, device);
+  auto new_stmt = std::make_unique<OffloadedStmt>(task_type, device, kernel_);
   new_stmt->snode = snode;
   new_stmt->begin_offset = begin_offset;
   new_stmt->end_offset = end_offset;
@@ -395,6 +398,7 @@ std::unique_ptr<Stmt> OffloadedStmt::clone() const {
   new_stmt->grid_dim = grid_dim;
   new_stmt->block_dim = block_dim;
   new_stmt->reversed = reversed;
+  new_stmt->is_bit_vectorized = is_bit_vectorized;
   new_stmt->num_cpu_threads = num_cpu_threads;
   new_stmt->index_offsets = index_offsets;
 
@@ -410,27 +414,27 @@ std::unique_ptr<Stmt> OffloadedStmt::clone() const {
 
   if (tls_prologue) {
     new_stmt->tls_prologue = tls_prologue->clone();
-    new_stmt->tls_prologue->parent_stmt = new_stmt.get();
+    new_stmt->tls_prologue->set_parent_stmt(new_stmt.get());
   }
   if (mesh_prologue) {
     new_stmt->mesh_prologue = mesh_prologue->clone();
-    new_stmt->mesh_prologue->parent_stmt = new_stmt.get();
+    new_stmt->mesh_prologue->set_parent_stmt(new_stmt.get());
   }
   if (bls_prologue) {
     new_stmt->bls_prologue = bls_prologue->clone();
-    new_stmt->bls_prologue->parent_stmt = new_stmt.get();
+    new_stmt->bls_prologue->set_parent_stmt(new_stmt.get());
   }
   if (body) {
     new_stmt->body = body->clone();
-    new_stmt->body->parent_stmt = new_stmt.get();
+    new_stmt->body->set_parent_stmt(new_stmt.get());
   }
   if (bls_epilogue) {
     new_stmt->bls_epilogue = bls_epilogue->clone();
-    new_stmt->bls_epilogue->parent_stmt = new_stmt.get();
+    new_stmt->bls_epilogue->set_parent_stmt(new_stmt.get());
   }
   if (tls_epilogue) {
     new_stmt->tls_epilogue = tls_epilogue->clone();
-    new_stmt->tls_epilogue->parent_stmt = new_stmt.get();
+    new_stmt->tls_epilogue->set_parent_stmt(new_stmt.get());
   }
   new_stmt->tls_size = tls_size;
   new_stmt->bls_size = bls_size;
@@ -463,44 +467,8 @@ ClearListStmt::ClearListStmt(SNode *snode) : snode(snode) {
   TI_STMT_REG_FIELDS;
 }
 
-int LoopIndexStmt::max_num_bits() const {
-  if (auto range_for = loop->cast<RangeForStmt>()) {
-    // Return the max number of bits only if both begin and end are
-    // non-negative consts.
-    if (!range_for->begin->is<ConstStmt>() || !range_for->end->is<ConstStmt>())
-      return -1;
-    auto begin = range_for->begin->as<ConstStmt>();
-    for (int i = 0; i < (int)begin->val.size(); i++) {
-      if (begin->val[i].val_int() < 0)
-        return -1;
-    }
-    auto end = range_for->end->as<ConstStmt>();
-    int result = 0;
-    for (int i = 0; i < (int)end->val.size(); i++) {
-      result = std::max(result, (int)bit::ceil_log2int(end->val[i].val_int()));
-    }
-    return result;
-  } else if (auto struct_for = loop->cast<StructForStmt>()) {
-    return struct_for->snode->get_num_bits(index);
-  } else if (auto offload = loop->cast<OffloadedStmt>()) {
-    if (offload->task_type == OffloadedStmt::TaskType::range_for) {
-      if (!offload->const_begin || !offload->const_end)
-        return -1;
-      if (offload->begin_value < 0)
-        return -1;
-      return bit::ceil_log2int(offload->end_value);
-    } else if (offload->task_type == OffloadedStmt::TaskType::struct_for) {
-      return offload->snode->get_num_bits(index);
-    } else {
-      TI_NOT_IMPLEMENTED
-    }
-  } else {
-    TI_NOT_IMPLEMENTED
-  }
+BitStructType *BitStructStoreStmt::get_bit_struct() const {
+  return ptr->as<SNodeLookupStmt>()->snode->dt->as<BitStructType>();
 }
 
-SNode *BitStructStoreStmt::get_bit_struct_snode() const {
-  return ptr->as<SNodeLookupStmt>()->snode;
-}
-
-TLANG_NAMESPACE_END
+}  // namespace taichi::lang

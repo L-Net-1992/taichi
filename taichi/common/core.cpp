@@ -4,9 +4,12 @@
 *******************************************************************************/
 
 #include "taichi/common/core.h"
-
 #include "taichi/common/version.h"
 #include "taichi/common/commit_hash.h"
+
+#include <spdlog/fmt/fmt.h>
+#include <cstdlib>
+#include "taichi/common/logging.h"
 
 #if defined(TI_PLATFORM_WINDOWS)
 #include "taichi/platform/windows/windows.h"
@@ -15,7 +18,7 @@
 #include <unistd.h>
 #endif
 
-TI_NAMESPACE_BEGIN
+namespace taichi {
 
 std::string python_package_dir;
 
@@ -30,6 +33,11 @@ void set_python_package_dir(const std::string &dir) {
 std::string get_repo_dir() {
 #if defined(TI_PLATFORM_WINDOWS)
   return "C:/taichi_cache/";
+#elif defined(TI_PLATFORM_ANDROID)
+  // @FIXME: Not supported on Android. A possibility would be to return the
+  // application cache directory. This feature is not used yet on this OS so
+  // it should not break anything (yet!)
+  return "";
 #else
   auto xdg_cache = std::getenv("XDG_CACHE_HOME");
 
@@ -97,4 +105,4 @@ int PID::get_parent_pid() {
 #endif
 }
 
-TI_NAMESPACE_END
+}  // namespace taichi

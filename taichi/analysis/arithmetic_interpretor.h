@@ -7,8 +7,7 @@
 #include "taichi/ir/statements.h"
 #include "taichi/ir/type.h"
 
-namespace taichi {
-namespace lang {
+namespace taichi::lang {
 
 /**
  * Interprets a sequence of CHI IR statements within a block (acts like a
@@ -47,7 +46,7 @@ class ArithmeticInterpretor {
     }
 
     /**
-     * Tells the interpretor to ignore statement @param s.
+     * Tells the interpreter to ignore statement @param s.
      *
      * This is effective only for statements that are not supported by
      * ArithmeticInterpretor.
@@ -73,7 +72,7 @@ class ArithmeticInterpretor {
   };
 
   /**
-   * Defines the region of CHI statments to be evaluated.
+   * Defines the region of CHI statements to be evaluated.
    */
   struct CodeRegion {
     // Defines the sequence of CHI statements.
@@ -96,5 +95,4 @@ class ArithmeticInterpretor {
                                         const EvalContext &init_ctx) const;
 };
 
-}  // namespace lang
-}  // namespace taichi
+}  // namespace taichi::lang

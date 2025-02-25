@@ -17,7 +17,7 @@
 #include "taichi/common/core.h"
 #include "taichi/math/math.h"
 
-TI_NAMESPACE_BEGIN
+namespace taichi {
 
 // Declare and then load
 // Load to `this`
@@ -188,8 +188,8 @@ class Dict {
   }
 
   template <typename T>
-  std::enable_if_t<std::is_reference<T>::value, std::remove_reference_t<T>>
-      &get(std::string key) const {
+  std::enable_if_t<std::is_reference<T>::value, std::remove_reference_t<T>> &
+  get(std::string key) const {
     return *get_ptr<std::remove_reference_t<T>>(key);
   }
 
@@ -347,10 +347,11 @@ inline bool Dict::get<bool>(std::string key) const {
       {"true", true},   {"True", true},   {"t", true},  {"1", true},
       {"false", false}, {"False", false}, {"f", false}, {"0", false},
   };
-  TI_ASSERT_INFO(dict.find(s) != dict.end(), "Unkown identifer for bool: " + s);
+  TI_ASSERT_INFO(dict.find(s) != dict.end(),
+                 "Unknown identifier for bool: " + s);
   return dict[s];
 }
 
 using Config = Dict;
 
-TI_NAMESPACE_END
+}  // namespace taichi

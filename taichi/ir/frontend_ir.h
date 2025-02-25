@@ -7,20 +7,31 @@
 #include "taichi/ir/stmt_op_types.h"
 #include "taichi/ir/ir.h"
 #include "taichi/ir/expression.h"
-#include "taichi/backends/arch.h"
+#include "taichi/rhi/arch.h"
 #include "taichi/program/function.h"
 #include "taichi/ir/mesh.h"
+#include "taichi/ir/type_system.h"
 
-TLANG_NAMESPACE_BEGIN
+namespace taichi::lang {
+
+class ASTBuilder;
 
 struct ForLoopConfig {
-  int bit_vectorize{0};
+  bool is_bit_vectorized{false};
   int num_cpu_threads{0};
   bool strictly_serialized{false};
   MemoryAccessOptions mem_access_opt;
   int block_dim{0};
   bool uniform{false};
 };
+
+#define TI_DEFINE_CLONE_FOR_FRONTEND_IR                \
+  std::unique_ptr<Stmt> clone() const override {       \
+    std::unique_ptr<Stmt> new_stmt{                    \
+        new std::decay<decltype(*this)>::type{*this}}; \
+    new_stmt->ret_type = ret_type;                     \
+    return new_stmt;                                   \
+  }
 
 // Frontend Statements
 class FrontendExternalFuncStmt : public Stmt {
@@ -37,8 +48,10 @@ class FrontendExternalFuncStmt : public Stmt {
                            const std::string &bc_filename,
                            const std::string &bc_funcname,
                            const std::vector<Expr> &args,
-                           const std::vector<Expr> &outputs)
-      : so_func(so_func),
+                           const std::vector<Expr> &outputs,
+                           const DebugInfo &dbg_info)
+      : Stmt(dbg_info),
+        so_func(so_func),
         asm_source(asm_source),
         bc_filename(bc_filename),
         bc_funcname(bc_funcname),
@@ -47,34 +60,45 @@ class FrontendExternalFuncStmt : public Stmt {
   }
 
   TI_DEFINE_ACCEPT
+  TI_DEFINE_CLONE_FOR_FRONTEND_IR
 };
 
 class FrontendExprStmt : public Stmt {
  public:
   Expr val;
 
-  FrontendExprStmt(const Expr &val) : val(val) {
+  explicit FrontendExprStmt(const Expr &val) : val(val) {
   }
 
   TI_DEFINE_ACCEPT
+  TI_DEFINE_CLONE_FOR_FRONTEND_IR
 };
 
 class FrontendAllocaStmt : public Stmt {
  public:
   Identifier ident;
 
-  FrontendAllocaStmt(const Identifier &lhs, DataType type) : ident(lhs) {
-    ret_type = TypeFactory::create_vector_or_scalar_type(1, type);
+  FrontendAllocaStmt(const Identifier &lhs,
+                     DataType type,
+                     const DebugInfo &dbg_info = DebugInfo())
+      : Stmt(dbg_info), ident(lhs), is_shared(false) {
+    ret_type = type;
   }
 
   FrontendAllocaStmt(const Identifier &lhs,
                      std::vector<int> shape,
-                     DataType element)
-      : ident(lhs) {
-    ret_type = DataType(TypeFactory::create_tensor_type(shape, element));
+                     DataType element,
+                     bool is_shared = false,
+                     const DebugInfo &dbg_info = DebugInfo())
+      : Stmt(dbg_info), ident(lhs), is_shared(is_shared) {
+    ret_type = TypeFactory::get_instance().get_pointer_type(
+        DataType(TypeFactory::create_tensor_type(shape, element)));
   }
 
+  bool is_shared;
+
   TI_DEFINE_ACCEPT
+  TI_DEFINE_CLONE_FOR_FRONTEND_IR
 };
 
 class FrontendSNodeOpStmt : public Stmt {
@@ -84,12 +108,15 @@ class FrontendSNodeOpStmt : public Stmt {
   ExprGroup indices;
   Expr val;
 
-  FrontendSNodeOpStmt(SNodeOpType op_type,
-                      SNode *snode,
-                      const ExprGroup &indices,
-                      const Expr &val = Expr(nullptr));
+  FrontendSNodeOpStmt(
+      SNodeOpType op_type,
+      SNode *snode,
+      const ExprGroup &indices,
+      const Expr &val = Expr(std::shared_ptr<Expression>(nullptr)),
+      const DebugInfo &dbg_info = DebugInfo());
 
   TI_DEFINE_ACCEPT
+  TI_DEFINE_CLONE_FOR_FRONTEND_IR
 };
 
 class FrontendAssertStmt : public Stmt {
@@ -98,29 +125,36 @@ class FrontendAssertStmt : public Stmt {
   Expr cond;
   std::vector<Expr> args;
 
-  FrontendAssertStmt(const Expr &cond, const std::string &text)
-      : text(text), cond(cond) {
+  FrontendAssertStmt(const Expr &cond,
+                     const std::string &text,
+                     const DebugInfo &dbg_info = DebugInfo())
+      : Stmt(dbg_info), text(text), cond(cond) {
   }
 
   FrontendAssertStmt(const Expr &cond,
                      const std::string &text,
-                     const std::vector<Expr> &args_)
-      : text(text), cond(cond) {
+                     const std::vector<Expr> &args_,
+                     const DebugInfo &dbg_info = DebugInfo())
+      : Stmt(dbg_info), text(text), cond(cond) {
     for (auto &a : args_) {
       args.push_back(a);
     }
   }
 
   TI_DEFINE_ACCEPT
+  TI_DEFINE_CLONE_FOR_FRONTEND_IR
 };
 
 class FrontendAssignStmt : public Stmt {
  public:
   Expr lhs, rhs;
 
-  FrontendAssignStmt(const Expr &lhs, const Expr &rhs);
+  FrontendAssignStmt(const Expr &lhs,
+                     const Expr &rhs,
+                     const DebugInfo &dbg_info = DebugInfo());
 
   TI_DEFINE_ACCEPT
+  TI_DEFINE_CLONE_FOR_FRONTEND_IR
 };
 
 class FrontendIfStmt : public Stmt {
@@ -128,7 +162,8 @@ class FrontendIfStmt : public Stmt {
   Expr condition;
   std::unique_ptr<Block> true_statements, false_statements;
 
-  FrontendIfStmt(const Expr &condition) : condition(condition) {
+  explicit FrontendIfStmt(const Expr &condition, const DebugInfo &dbg_info)
+      : Stmt(dbg_info), condition(condition) {
   }
 
   bool is_container_statement() const override {
@@ -136,71 +171,84 @@ class FrontendIfStmt : public Stmt {
   }
 
   TI_DEFINE_ACCEPT
+  TI_DEFINE_CLONE_FOR_FRONTEND_IR
+ private:
+  FrontendIfStmt(const FrontendIfStmt &o);
 };
 
 class FrontendPrintStmt : public Stmt {
  public:
   using EntryType = std::variant<Expr, std::string>;
-  std::vector<EntryType> contents;
+  using FormatType = std::optional<std::string>;
+  const std::vector<EntryType> contents;
+  const std::vector<FormatType> formats;
 
-  FrontendPrintStmt(const std::vector<EntryType> &contents_) {
-    for (const auto &c : contents_) {
-      if (std::holds_alternative<Expr>(c))
-        contents.push_back(std::get<Expr>(c));
-      else
-        contents.push_back(c);
-    }
+  FrontendPrintStmt(const std::vector<EntryType> &contents_,
+                    const std::vector<FormatType> &formats_,
+                    const DebugInfo &dbg_info = DebugInfo())
+      : Stmt(dbg_info), contents(contents_), formats(formats_) {
   }
 
   TI_DEFINE_ACCEPT
+  TI_DEFINE_CLONE_FOR_FRONTEND_IR
 };
 
 class FrontendForStmt : public Stmt {
  public:
+  SNode *snode{nullptr};
+  Expr external_tensor;
+  mesh::Mesh *mesh{nullptr};
+  mesh::MeshElementType element_type;
   Expr begin, end;
-  Expr global_var;
   std::unique_ptr<Block> body;
-  std::vector<Identifier> loop_var_id;
-  int bit_vectorize;
+  std::vector<Identifier> loop_var_ids;
+  bool is_bit_vectorized;
   int num_cpu_threads;
   bool strictly_serialized;
   MemoryAccessOptions mem_access_opt;
   int block_dim;
 
-  bool mesh_for = false;
-  mesh::Mesh *mesh;
-  mesh::MeshElementType element_type;
-
-  bool is_ranged() const {
-    if (global_var.expr == nullptr && !mesh_for) {
-      return true;
-    } else {
-      return false;
-    }
-  }
-
-  FrontendForStmt(const ExprGroup &loop_var,
-                  const Expr &global_var,
+  FrontendForStmt(const ExprGroup &loop_vars,
+                  SNode *snode,
                   Arch arch,
-                  const ForLoopConfig &config);
+                  const ForLoopConfig &config,
+                  const DebugInfo &dbg_info = DebugInfo());
 
-  FrontendForStmt(const ExprGroup &loop_var,
+  FrontendForStmt(const ExprGroup &loop_vars,
+                  const Expr &external_tensor,
+                  Arch arch,
+                  const ForLoopConfig &config,
+                  const DebugInfo &dbg_info = DebugInfo());
+
+  FrontendForStmt(const ExprGroup &loop_vars,
                   const mesh::MeshPtr &mesh,
                   const mesh::MeshElementType &element_type,
                   Arch arch,
-                  const ForLoopConfig &config);
+                  const ForLoopConfig &config,
+                  const DebugInfo &dbg_info = DebugInfo());
 
   FrontendForStmt(const Expr &loop_var,
                   const Expr &begin,
                   const Expr &end,
                   Arch arch,
-                  const ForLoopConfig &config);
+                  const ForLoopConfig &config,
+                  const DebugInfo &dbg_info = DebugInfo());
 
   bool is_container_statement() const override {
     return true;
   }
 
   TI_DEFINE_ACCEPT
+  TI_DEFINE_CLONE_FOR_FRONTEND_IR
+
+ private:
+  FrontendForStmt(const FrontendForStmt &o);
+
+  void init_config(Arch arch, const ForLoopConfig &config);
+
+  void init_loop_vars(const ExprGroup &loop_vars);
+
+  void add_loop_var(const Expr &loop_var);
 };
 
 class FrontendFuncDefStmt : public Stmt {
@@ -208,7 +256,7 @@ class FrontendFuncDefStmt : public Stmt {
   std::string funcid;
   std::unique_ptr<Block> body;
 
-  FrontendFuncDefStmt(const std::string &funcid) : funcid(funcid) {
+  explicit FrontendFuncDefStmt(const std::string &funcid) : funcid(funcid) {
   }
 
   bool is_container_statement() const override {
@@ -216,11 +264,16 @@ class FrontendFuncDefStmt : public Stmt {
   }
 
   TI_DEFINE_ACCEPT
+  TI_DEFINE_CLONE_FOR_FRONTEND_IR
+
+ private:
+  FrontendFuncDefStmt(const FrontendFuncDefStmt &o);
 };
 
 class FrontendBreakStmt : public Stmt {
  public:
-  FrontendBreakStmt() {
+  explicit FrontendBreakStmt(const DebugInfo &dbg_info = DebugInfo())
+      : Stmt(dbg_info) {
   }
 
   bool is_container_statement() const override {
@@ -228,17 +281,21 @@ class FrontendBreakStmt : public Stmt {
   }
 
   TI_DEFINE_ACCEPT
+  TI_DEFINE_CLONE_FOR_FRONTEND_IR
 };
 
 class FrontendContinueStmt : public Stmt {
  public:
-  FrontendContinueStmt() = default;
+  explicit FrontendContinueStmt(const DebugInfo &dbg_info = DebugInfo())
+      : Stmt(dbg_info) {
+  }
 
   bool is_container_statement() const override {
     return false;
   }
 
   TI_DEFINE_ACCEPT
+  TI_DEFINE_CLONE_FOR_FRONTEND_IR
 };
 
 class FrontendWhileStmt : public Stmt {
@@ -246,7 +303,8 @@ class FrontendWhileStmt : public Stmt {
   Expr cond;
   std::unique_ptr<Block> body;
 
-  FrontendWhileStmt(const Expr &cond) : cond(cond) {
+  explicit FrontendWhileStmt(const Expr &cond, const DebugInfo &dbg_info)
+      : Stmt(dbg_info), cond(cond) {
   }
 
   bool is_container_statement() const override {
@@ -254,55 +312,128 @@ class FrontendWhileStmt : public Stmt {
   }
 
   TI_DEFINE_ACCEPT
+  TI_DEFINE_CLONE_FOR_FRONTEND_IR
+ private:
+  FrontendWhileStmt(const FrontendWhileStmt &o);
 };
 
 class FrontendReturnStmt : public Stmt {
  public:
   ExprGroup values;
 
-  FrontendReturnStmt(const ExprGroup &group) : values(group) {
-  }
+  explicit FrontendReturnStmt(const ExprGroup &group,
+                              const DebugInfo &dbg_info = DebugInfo());
 
   bool is_container_statement() const override {
     return false;
   }
 
   TI_DEFINE_ACCEPT
+  TI_DEFINE_CLONE_FOR_FRONTEND_IR
 };
 
 // Expressions
 
 class ArgLoadExpression : public Expression {
  public:
-  int arg_id;
+  const std::vector<int> arg_id;
   DataType dt;
+  bool is_ptr;
 
-  ArgLoadExpression(int arg_id, DataType dt) : arg_id(arg_id), dt(dt) {
+  /* Creates a load statement if true, otherwise returns the pointer
+   * directly.
+   * TODO: Split ArgLoad into two steps: ArgAddr and GlobalLoad.
+   */
+  bool create_load;
+
+  int arg_depth;
+
+  ArgLoadExpression(const std::vector<int> &arg_id,
+                    DataType dt,
+                    bool is_ptr = false,
+                    bool create_load = true,
+                    int arg_depth = 0,
+                    const DebugInfo &dbg_info = DebugInfo())
+      : Expression(dbg_info),
+        arg_id(arg_id),
+        dt(dt),
+        is_ptr(is_ptr),
+        create_load(create_load),
+        arg_depth(arg_depth) {
   }
 
-  void type_check(CompileConfig *config) override;
-
-  void serialize(std::ostream &ss) override {
-    ss << fmt::format("arg[{}] (dt={})", arg_id, data_type_name(dt));
-  }
+  void type_check(const CompileConfig *config) override;
 
   void flatten(FlattenContext *ctx) override;
+
+  bool is_lvalue() const override {
+    return is_ptr;
+  }
+
+  TI_DEFINE_ACCEPT_FOR_EXPRESSION
+};
+
+class Texture;
+
+class TexturePtrExpression : public Expression {
+ public:
+  const std::vector<int> arg_id;
+  int num_dims;
+  bool is_storage{false};
+  int arg_depth;
+
+  // Optional, for storage textures
+  BufferFormat format{BufferFormat::unknown};
+  int lod{0};
+
+  explicit TexturePtrExpression(const std::vector<int> &arg_id,
+                                int num_dims,
+                                int arg_depth,
+                                const DebugInfo &dbg_info = DebugInfo())
+      : Expression(dbg_info),
+        arg_id(arg_id),
+        num_dims(num_dims),
+        is_storage(false),
+        arg_depth(arg_depth),
+        format(BufferFormat::rgba8),
+        lod(0) {
+  }
+
+  TexturePtrExpression(const std::vector<int> &arg_id,
+                       int num_dims,
+                       int arg_depth,
+                       BufferFormat format,
+                       int lod,
+                       const DebugInfo &dbg_info = DebugInfo())
+      : Expression(dbg_info),
+        arg_id(arg_id),
+        num_dims(num_dims),
+        is_storage(true),
+        arg_depth(arg_depth),
+        format(format),
+        lod(lod) {
+  }
+
+  void type_check(const CompileConfig *config) override;
+
+  void flatten(FlattenContext *ctx) override;
+
+  TI_DEFINE_ACCEPT_FOR_EXPRESSION
 };
 
 class RandExpression : public Expression {
  public:
   DataType dt;
 
-  RandExpression(DataType dt) : dt(dt) {
+  explicit RandExpression(DataType dt, const DebugInfo &dbg_info = DebugInfo())
+      : Expression(dbg_info), dt(dt) {
   }
 
-  void type_check(CompileConfig *config) override;
-
-  void serialize(std::ostream &ss) override {
-    ss << fmt::format("rand<{}>()", data_type_name(dt));
-  }
+  void type_check(const CompileConfig *config) override;
 
   void flatten(FlattenContext *ctx) override;
+
+  TI_DEFINE_ACCEPT_FOR_EXPRESSION
 };
 
 class UnaryOpExpression : public Expression {
@@ -311,22 +442,30 @@ class UnaryOpExpression : public Expression {
   Expr operand;
   DataType cast_type;
 
-  UnaryOpExpression(UnaryOpType type, const Expr &operand)
-      : type(type), operand(operand) {
+  UnaryOpExpression(UnaryOpType type,
+                    const Expr &operand,
+                    const DebugInfo &dbg_info = DebugInfo())
+      : Expression(dbg_info), type(type), operand(operand) {
     cast_type = PrimitiveType::unknown;
   }
 
-  UnaryOpExpression(UnaryOpType type, const Expr &operand, DataType cast_type)
-      : type(type), operand(operand), cast_type(cast_type) {
+  UnaryOpExpression(UnaryOpType type,
+                    const Expr &operand,
+                    DataType cast_type,
+                    const DebugInfo &dbg_info = DebugInfo())
+      : Expression(dbg_info),
+        type(type),
+        operand(operand),
+        cast_type(cast_type) {
   }
 
-  void type_check(CompileConfig *config) override;
+  void type_check(const CompileConfig *config) override;
 
   bool is_cast() const;
 
-  void serialize(std::ostream &ss) override;
-
   void flatten(FlattenContext *ctx) override;
+
+  TI_DEFINE_ACCEPT_FOR_EXPRESSION
 };
 
 class BinaryOpExpression : public Expression {
@@ -338,19 +477,11 @@ class BinaryOpExpression : public Expression {
       : type(type), lhs(lhs), rhs(rhs) {
   }
 
-  void type_check(CompileConfig *config) override;
-
-  void serialize(std::ostream &ss) override {
-    ss << '(';
-    lhs->serialize(ss);
-    ss << ' ';
-    ss << binary_op_type_symbol(type);
-    ss << ' ';
-    rhs->serialize(ss);
-    ss << ')';
-  }
+  void type_check(const CompileConfig *config) override;
 
   void flatten(FlattenContext *ctx) override;
+
+  TI_DEFINE_ACCEPT_FOR_EXPRESSION
 };
 
 class TernaryOpExpression : public Expression {
@@ -368,204 +499,211 @@ class TernaryOpExpression : public Expression {
     this->op3.set(op3);
   }
 
-  void type_check(CompileConfig *config) override;
-
-  void serialize(std::ostream &ss) override {
-    ss << ternary_type_name(type) << '(';
-    op1->serialize(ss);
-    ss << ' ';
-    op2->serialize(ss);
-    ss << ' ';
-    op3->serialize(ss);
-    ss << ')';
-  }
+  void type_check(const CompileConfig *config) override;
 
   void flatten(FlattenContext *ctx) override;
+
+  TI_DEFINE_ACCEPT_FOR_EXPRESSION
 };
 
 class InternalFuncCallExpression : public Expression {
  public:
-  std::string func_name;
+  Operation *op;
   std::vector<Expr> args;
 
-  InternalFuncCallExpression(const std::string &func_name,
-                             const std::vector<Expr> &args_)
-      : func_name(func_name) {
-    for (auto &a : args_) {
-      args.push_back(a);
-    }
+  InternalFuncCallExpression(Operation *op, const std::vector<Expr> &args_)
+      : op(op), args(args_) {
   }
 
-  void type_check(CompileConfig *config) override;
-
-  void serialize(std::ostream &ss) override {
-    ss << "internal call " << func_name << '(';
-    std::string args_str;
-    for (int i = 0; i < args.size(); i++) {
-      if (i != 0) {
-        ss << ", ";
-      }
-      args[i]->serialize(ss);
-    }
-    ss << ')';
-  }
+  void type_check(const CompileConfig *config) override;
 
   void flatten(FlattenContext *ctx) override;
+
+  TI_DEFINE_ACCEPT_FOR_EXPRESSION
 };
 
 // TODO: Make this a non-expr
 class ExternalTensorExpression : public Expression {
  public:
   DataType dt;
-  int dim;
-  int arg_id;
-  int element_dim;  // 0: scalar; 1: vector (SOA); 2: matrix (SOA); -1: vector
-                    // (AOS); -2: matrix (AOS)
-
-  // Fill element shape if compile-time specialization is desired.
-  std::vector<int> element_shape;
-
-  ExternalTensorExpression(const DataType &dt,
-                           int dim,
-                           int arg_id,
-                           int element_dim)
-      : dt(dt), dim(dim), arg_id(arg_id), element_dim(element_dim) {
-    set_attribute("dim", std::to_string(dim));
-  }
+  int ndim;
+  std::vector<int> arg_id;
+  bool needs_grad{false};
+  bool is_grad{false};
+  int arg_depth{0};
+  BoundaryMode boundary{BoundaryMode::kUnsafe};
 
   ExternalTensorExpression(const DataType &dt,
-                           int dim,
-                           int arg_id,
-                           int element_dim,
-                           const std::vector<int> &element_shape)
-      : ExternalTensorExpression(dt, dim, arg_id, element_dim) {
-    this->element_shape = element_shape;
+                           int ndim,
+                           const std::vector<int> &arg_id,
+                           bool needs_grad = false,
+                           int arg_depth = false,
+                           BoundaryMode boundary = BoundaryMode::kUnsafe) {
+    init(dt, ndim, arg_id, needs_grad, arg_depth, boundary);
   }
 
-  void type_check(CompileConfig *config) override {
-  }
-
-  void serialize(std::ostream &ss) override {
-    ss << fmt::format("{}d_ext_arr (element_dim={}, dt={})", dim, element_dim,
-                      dt->to_string());
+  explicit ExternalTensorExpression(Expr *expr) : is_grad(true) {
+    auto ptr = expr->cast<ExternalTensorExpression>();
+    init(ptr->dt, ptr->ndim, ptr->arg_id, ptr->needs_grad, ptr->arg_depth,
+         ptr->boundary);
   }
 
   void flatten(FlattenContext *ctx) override;
+
+  TI_DEFINE_ACCEPT_FOR_EXPRESSION
+
+  const CompileConfig *get_compile_config() {
+    TI_ASSERT(config_ != nullptr);
+    return config_;
+  }
+
+  void type_check(const CompileConfig *config) override {
+    ret_type = TypeFactory::get_instance().get_ndarray_struct_type(dt, ndim,
+                                                                   needs_grad);
+    ret_type.set_is_pointer(true);
+    config_ = config;
+  }
+
+ private:
+  const CompileConfig *config_ = nullptr;
+
+  void init(const DataType &dt,
+            int ndim,
+            const std::vector<int> &arg_id,
+            bool needs_grad,
+            int arg_depth,
+            BoundaryMode boundary) {
+    this->dt = dt;
+    this->ndim = ndim;
+    this->arg_id = arg_id;
+    this->needs_grad = needs_grad;
+    this->arg_depth = arg_depth;
+    this->boundary = boundary;
+  }
 };
 
 // TODO: Make this a non-expr
-class GlobalVariableExpression : public Expression {
+class FieldExpression : public Expression {
  public:
   Identifier ident;
   DataType dt;
   std::string name;
-  SNode *snode;
-  bool has_ambient;
+  SNode *snode{nullptr};
+  SNodeGradType snode_grad_type{SNodeGradType::kPrimal};
+  bool has_ambient{false};
   TypedConstant ambient_value;
-  bool is_primal;
   Expr adjoint;
+  Expr dual;
+  Expr adjoint_checkbit;
 
-  GlobalVariableExpression(DataType dt, const Identifier &ident)
-      : ident(ident), dt(dt) {
-    snode = nullptr;
-    has_ambient = false;
-    is_primal = true;
+  FieldExpression(DataType dt, const Identifier &ident) : ident(ident), dt(dt) {
   }
 
-  GlobalVariableExpression(SNode *snode) : snode(snode) {
-    dt = snode->dt;
-    has_ambient = false;
-    is_primal = true;
-  }
-
-  void type_check(CompileConfig *config) override {
+  void type_check(const CompileConfig *config) override {
   }
 
   void set_snode(SNode *snode) {
     this->snode = snode;
-    set_attribute("dim", std::to_string(snode->num_active_indices));
   }
 
-  void serialize(std::ostream &ss) override {
-    ss << "#" << ident.name();
-    if (snode)
-      ss << fmt::format(" (snode={})", snode->get_node_type_name_hinted());
-    else
-      ss << fmt::format(" (dt={})", dt->to_string());
-  }
-
-  void flatten(FlattenContext *ctx) override;
+  TI_DEFINE_ACCEPT_FOR_EXPRESSION
 };
 
-class GlobalPtrExpression : public Expression {
+class MatrixFieldExpression : public Expression {
  public:
-  SNode *snode{nullptr};
+  std::vector<Expr> fields;
+  std::vector<int> element_shape;
+  bool dynamic_indexable{false};
+  int dynamic_index_stride{0};
+
+  MatrixFieldExpression(const std::vector<Expr> &fields,
+                        const std::vector<int> &element_shape)
+      : fields(fields), element_shape(element_shape) {
+    for (auto &field : fields) {
+      TI_ASSERT(field.is<FieldExpression>());
+    }
+    TI_ASSERT(!fields.empty());
+    auto compute_type =
+        fields[0].cast<FieldExpression>()->dt->get_compute_type();
+    for (auto &field : fields) {
+      if (field.cast<FieldExpression>()->dt->get_compute_type() !=
+          compute_type) {
+        throw TaichiRuntimeError(
+            "Member fields of a matrix field must have the same compute type");
+      }
+    }
+  }
+
+  void type_check(const CompileConfig *config) override {
+  }
+
+  TI_DEFINE_ACCEPT_FOR_EXPRESSION
+};
+
+/**
+ * Creating a local matrix;
+ * lowered from ti.Matrix
+ */
+class MatrixExpression : public Expression {
+ public:
+  std::vector<Expr> elements;
+  DataType dt;
+
+  MatrixExpression(const std::vector<Expr> &elements,
+                   std::vector<int> shape,
+                   DataType element_type,
+                   const DebugInfo &dbg_info = DebugInfo())
+      : Expression(dbg_info), elements(elements) {
+    dt = TypeFactory::create_tensor_type(shape, element_type);
+  }
+
+  void type_check(const CompileConfig *config) override;
+
+  void flatten(FlattenContext *ctx) override;
+
+  TI_DEFINE_ACCEPT_FOR_EXPRESSION
+};
+
+class IndexExpression : public Expression {
+ public:
+  // `var` is one of FieldExpression, MatrixFieldExpression,
+  // ExternalTensorExpression, IdExpression
   Expr var;
-  ExprGroup indices;
+  // In the cases of matrix slice and vector swizzle, there can be multiple
+  // indices, and the corresponding ret_shape should also be recorded. In normal
+  // index expressions ret_shape will be left empty.
+  std::vector<ExprGroup> indices_group;
+  std::vector<int> ret_shape;
 
-  GlobalPtrExpression(const Expr &var, const ExprGroup &indices)
-      : var(var), indices(indices) {
-  }
+  IndexExpression(const Expr &var,
+                  const ExprGroup &indices,
+                  const DebugInfo &dbg_info = DebugInfo());
 
-  GlobalPtrExpression(SNode *snode, const ExprGroup &indices)
-      : snode(snode), indices(indices) {
-  }
+  IndexExpression(const Expr &var,
+                  const std::vector<ExprGroup> &indices_group,
+                  const std::vector<int> &ret_shape,
+                  const DebugInfo &dbg_info = DebugInfo());
 
-  void type_check(CompileConfig *config) override;
-
-  void serialize(std::ostream &ss) override;
+  void type_check(const CompileConfig *config) override;
 
   void flatten(FlattenContext *ctx) override;
 
   bool is_lvalue() const override {
     return true;
   }
-};
 
-class TensorElementExpression : public Expression {
- public:
-  Expr var;
-  ExprGroup indices;
-  std::vector<int> shape;
-  int stride{0};
+  // whether the LocalLoad/Store or GlobalLoad/Store is to be used on the
+  // compiled stmt
+  bool is_local() const;
+  bool is_global() const;
 
-  TensorElementExpression(const Expr &var,
-                          const ExprGroup &indices,
-                          const std::vector<int> &shape,
-                          int stride)
-      : var(var), indices(indices), shape(shape), stride(stride) {
-    // TODO: shape & indices check
-  }
+  TI_DEFINE_ACCEPT_FOR_EXPRESSION
 
-  void type_check(CompileConfig *config) override;
-
-  bool is_local_tensor() const;
-
-  bool is_global_tensor() const;
-
-  void serialize(std::ostream &ss) override {
-    var.serialize(ss);
-    ss << '[';
-    for (int i = 0; i < (int)indices.size(); i++) {
-      indices.exprs[i]->serialize(ss);
-      if (i + 1 < (int)indices.size())
-        ss << ", ";
-    }
-    ss << "] (";
-    for (int i = 0; i < (int)shape.size(); i++) {
-      ss << std::to_string(shape[i]);
-      if (i + 1 < (int)shape.size())
-        ss << ", ";
-    }
-    ss << ", stride = " + std::to_string(stride);
-    ss << ')';
-  }
-
-  void flatten(FlattenContext *ctx) override;
-
-  bool is_lvalue() const override {
-    return true;
-  }
+ private:
+  bool is_field() const;
+  bool is_matrix_field() const;
+  bool is_ndarray() const;
+  bool is_tensor() const;
 };
 
 class RangeAssumptionExpression : public Expression {
@@ -576,24 +714,16 @@ class RangeAssumptionExpression : public Expression {
   RangeAssumptionExpression(const Expr &input,
                             const Expr &base,
                             int low,
-                            int high)
-      : input(input), base(base), low(low), high(high) {
+                            int high,
+                            const DebugInfo &dbg_info = DebugInfo())
+      : Expression(dbg_info), input(input), base(base), low(low), high(high) {
   }
 
-  void type_check(CompileConfig *config) override;
-
-  void serialize(std::ostream &ss) override {
-    ss << "assume_in_range({";
-    base.serialize(ss);
-    ss << fmt::format("{:+d}", low);
-    ss << " <= (";
-    input.serialize(ss);
-    ss << ")  < ";
-    base.serialize(ss);
-    ss << fmt::format("{:+d})", high);
-  }
+  void type_check(const CompileConfig *config) override;
 
   void flatten(FlattenContext *ctx) override;
+
+  TI_DEFINE_ACCEPT_FOR_EXPRESSION
 };
 
 class LoopUniqueExpression : public Expression {
@@ -601,30 +731,27 @@ class LoopUniqueExpression : public Expression {
   Expr input;
   std::vector<SNode *> covers;
 
-  LoopUniqueExpression(const Expr &input, const std::vector<SNode *> &covers)
-      : input(input), covers(covers) {
+  LoopUniqueExpression(const Expr &input,
+                       const std::vector<SNode *> &covers,
+                       const DebugInfo &dbg_info = DebugInfo())
+      : Expression(dbg_info), input(input), covers(covers) {
   }
 
-  void type_check(CompileConfig *config) override;
-
-  void serialize(std::ostream &ss) override;
+  void type_check(const CompileConfig *config) override;
 
   void flatten(FlattenContext *ctx) override;
+
+  TI_DEFINE_ACCEPT_FOR_EXPRESSION
 };
 
 class IdExpression : public Expression {
  public:
   Identifier id;
-  IdExpression(const std::string &name = "") : id(name) {
-  }
-  IdExpression(const Identifier &id) : id(id) {
+
+  explicit IdExpression(const Identifier &id) : id(id) {
   }
 
-  void type_check(CompileConfig *config) override {
-  }
-
-  void serialize(std::ostream &ss) override {
-    ss << id.name();
+  void type_check(const CompileConfig *config) override {
   }
 
   void flatten(FlattenContext *ctx) override;
@@ -636,6 +763,8 @@ class IdExpression : public Expression {
   bool is_lvalue() const override {
     return true;
   }
+
+  TI_DEFINE_ACCEPT_FOR_EXPRESSION
 };
 
 // ti.atomic_*() is an expression with side effect.
@@ -648,11 +777,11 @@ class AtomicOpExpression : public Expression {
       : op_type(op_type), dest(dest), val(val) {
   }
 
-  void type_check(CompileConfig *config) override;
-
-  void serialize(std::ostream &ss) override;
+  void type_check(const CompileConfig *config) override;
 
   void flatten(FlattenContext *ctx) override;
+
+  TI_DEFINE_ACCEPT_FOR_EXPRESSION
 };
 
 class SNodeOpExpression : public Expression {
@@ -660,24 +789,40 @@ class SNodeOpExpression : public Expression {
   SNode *snode;
   SNodeOpType op_type;
   ExprGroup indices;
-  Expr value;
+  std::vector<Expr> values;  // Only for op_type==append
 
-  SNodeOpExpression(SNode *snode, SNodeOpType op_type, const ExprGroup &indices)
-      : snode(snode), op_type(op_type), indices(indices) {
-  }
+  SNodeOpExpression(SNode *snode,
+                    SNodeOpType op_type,
+                    const ExprGroup &indices);
 
   SNodeOpExpression(SNode *snode,
                     SNodeOpType op_type,
                     const ExprGroup &indices,
-                    const Expr &value)
-      : snode(snode), op_type(op_type), indices(indices), value(value) {
-  }
+                    const std::vector<Expr> &values);
 
-  void type_check(CompileConfig *config) override;
-
-  void serialize(std::ostream &ss) override;
+  void type_check(const CompileConfig *config) override;
 
   void flatten(FlattenContext *ctx) override;
+
+  TI_DEFINE_ACCEPT_FOR_EXPRESSION
+};
+
+class TextureOpExpression : public Expression {
+ public:
+  TextureOpType op;
+  Expr texture_ptr;
+  ExprGroup args;
+
+  explicit TextureOpExpression(TextureOpType op,
+                               Expr texture_ptr,
+                               const ExprGroup &args,
+                               const DebugInfo &dbg_info = DebugInfo());
+
+  void type_check(const CompileConfig *config) override;
+
+  void flatten(FlattenContext *ctx) override;
+
+  TI_DEFINE_ACCEPT_FOR_EXPRESSION
 };
 
 class ConstExpression : public Expression {
@@ -685,7 +830,7 @@ class ConstExpression : public Expression {
   TypedConstant val;
 
   template <typename T>
-  ConstExpression(const T &x) : val(x) {
+  explicit ConstExpression(const T &x) : val(x) {
     ret_type = val.dt;
   }
   template <typename T>
@@ -693,13 +838,11 @@ class ConstExpression : public Expression {
     ret_type = dt;
   }
 
-  void type_check(CompileConfig *config) override;
-
-  void serialize(std::ostream &ss) override {
-    ss << val.stringify();
-  }
+  void type_check(const CompileConfig *config) override;
 
   void flatten(FlattenContext *ctx) override;
+
+  TI_DEFINE_ACCEPT_FOR_EXPRESSION
 };
 
 class ExternalTensorShapeAlongAxisExpression : public Expression {
@@ -707,51 +850,93 @@ class ExternalTensorShapeAlongAxisExpression : public Expression {
   Expr ptr;
   int axis;
 
-  void serialize(std::ostream &ss) override {
-    ss << "external_tensor_shape_along_axis(";
-    ptr->serialize(ss);
-    ss << ", " << axis << ')';
+  ExternalTensorShapeAlongAxisExpression(
+      const Expr &ptr,
+      int axis,
+      const DebugInfo &dbg_info = DebugInfo())
+      : Expression(dbg_info), ptr(ptr), axis(axis) {
   }
 
-  ExternalTensorShapeAlongAxisExpression(const Expr &ptr, int axis)
-      : ptr(ptr), axis(axis) {
-  }
-
-  void type_check(CompileConfig *config) override;
+  void type_check(const CompileConfig *config) override;
 
   void flatten(FlattenContext *ctx) override;
+
+  TI_DEFINE_ACCEPT_FOR_EXPRESSION
 };
 
-class FuncCallExpression : public Expression {
+class ExternalTensorBasePtrExpression : public Expression {
  public:
+  Expr ptr;
+  bool is_grad;
+
+  explicit ExternalTensorBasePtrExpression(
+      const Expr &ptr,
+      bool is_grad,
+      const DebugInfo &dbg_info = DebugInfo())
+      : ptr(ptr), is_grad(is_grad) {
+  }
+
+  void type_check(const CompileConfig *config) override;
+
+  void flatten(FlattenContext *ctx) override;
+
+  TI_DEFINE_ACCEPT_FOR_EXPRESSION
+};
+
+class FrontendFuncCallStmt : public Stmt {
+ public:
+  std::optional<Identifier> ident;
   Function *func;
   ExprGroup args;
 
-  void type_check(CompileConfig *config) override;
+  explicit FrontendFuncCallStmt(
+      Function *func,
+      const ExprGroup &args,
+      const std::optional<Identifier> &id = std::nullopt,
+      const DebugInfo &dbg_info = DebugInfo())
+      : Stmt(dbg_info), ident(id), func(func), args(args) {
+    TI_ASSERT(id.has_value() == !func->rets.empty());
+  }
 
-  void serialize(std::ostream &ss) override;
+  bool is_container_statement() const override {
+    return false;
+  }
 
-  FuncCallExpression(Function *func, const ExprGroup &args)
-      : func(func), args(args) {
+  TI_DEFINE_ACCEPT
+  TI_DEFINE_CLONE_FOR_FRONTEND_IR
+};
+
+class GetElementExpression : public Expression {
+ public:
+  Expr src;
+  std::vector<int> index;
+
+  void type_check(const CompileConfig *config) override;
+
+  GetElementExpression(const Expr &src,
+                       std::vector<int> index,
+                       const DebugInfo &dbg_info = DebugInfo())
+      : Expression(dbg_info), src(src), index(index) {
   }
 
   void flatten(FlattenContext *ctx) override;
+
+  TI_DEFINE_ACCEPT_FOR_EXPRESSION
 };
 
 // Mesh related.
 
 class MeshPatchIndexExpression : public Expression {
  public:
-  MeshPatchIndexExpression() {
+  explicit MeshPatchIndexExpression(const DebugInfo &dbg_info = DebugInfo())
+      : Expression(dbg_info) {
   }
 
-  void type_check(CompileConfig *config) override;
-
-  void serialize(std::ostream &ss) override {
-    ss << fmt::format("mesh_patch_idx()");
-  }
+  void type_check(const CompileConfig *config) override;
 
   void flatten(FlattenContext *ctx) override;
+
+  TI_DEFINE_ACCEPT_FOR_EXPRESSION
 };
 
 class MeshRelationAccessExpression : public Expression {
@@ -761,39 +946,30 @@ class MeshRelationAccessExpression : public Expression {
   mesh::MeshElementType to_type;
   Expr neighbor_idx;
 
-  void type_check(CompileConfig *config) override;
-
-  void serialize(std::ostream &ss) override {
-    if (neighbor_idx) {
-      ss << "mesh_relation_access(";
-      mesh_idx->serialize(ss);
-      ss << ", " << mesh::element_type_name(to_type) << "[";
-      neighbor_idx->serialize(ss);
-      ss << "])";
-    } else {
-      ss << "mesh_relation_size(";
-      mesh_idx->serialize(ss);
-      ss << ", " << mesh::element_type_name(to_type) << ")";
-    }
-  }
+  void type_check(const CompileConfig *config) override;
 
   MeshRelationAccessExpression(mesh::Mesh *mesh,
                                const Expr mesh_idx,
-                               mesh::MeshElementType to_type)
-      : mesh(mesh), mesh_idx(mesh_idx), to_type(to_type) {
+                               mesh::MeshElementType to_type,
+                               const DebugInfo &dbg_info = DebugInfo())
+      : Expression(dbg_info), mesh(mesh), mesh_idx(mesh_idx), to_type(to_type) {
   }
 
   MeshRelationAccessExpression(mesh::Mesh *mesh,
                                const Expr mesh_idx,
                                mesh::MeshElementType to_type,
-                               const Expr neighbor_idx)
-      : mesh(mesh),
+                               const Expr neighbor_idx,
+                               const DebugInfo &dbg_info = DebugInfo())
+      : Expression(dbg_info),
+        mesh(mesh),
         mesh_idx(mesh_idx),
         to_type(to_type),
         neighbor_idx(neighbor_idx) {
   }
 
   void flatten(FlattenContext *ctx) override;
+
+  TI_DEFINE_ACCEPT_FOR_EXPRESSION
 };
 
 class MeshIndexConversionExpression : public Expression {
@@ -803,23 +979,32 @@ class MeshIndexConversionExpression : public Expression {
   Expr idx;
   mesh::ConvType conv_type;
 
-  void type_check(CompileConfig *config) override;
-
-  void serialize(std::ostream &ss) override {
-    ss << "mesh_index_conversion(" << mesh::conv_type_name(conv_type) << ", "
-       << mesh::element_type_name(idx_type) << ", ";
-    idx->serialize(ss);
-    ss << ")";
-  }
+  void type_check(const CompileConfig *config) override;
 
   MeshIndexConversionExpression(mesh::Mesh *mesh,
                                 mesh::MeshElementType idx_type,
                                 const Expr idx,
-                                mesh::ConvType conv_type)
-      : mesh(mesh), idx_type(idx_type), idx(idx), conv_type(conv_type) {
+                                mesh::ConvType conv_type,
+                                const DebugInfo &dbg_info = DebugInfo());
+
+  void flatten(FlattenContext *ctx) override;
+
+  TI_DEFINE_ACCEPT_FOR_EXPRESSION
+};
+
+class ReferenceExpression : public Expression {
+ public:
+  Expr var;
+  void type_check(const CompileConfig *config) override;
+
+  explicit ReferenceExpression(const Expr &expr,
+                               const DebugInfo &dbg_info = DebugInfo())
+      : Expression(dbg_info), var(expr) {
   }
 
   void flatten(FlattenContext *ctx) override;
+
+  TI_DEFINE_ACCEPT_FOR_EXPRESSION
 };
 
 class ASTBuilder {
@@ -836,7 +1021,7 @@ class ASTBuilder {
     }
 
     void reset() {
-      config.bit_vectorize = -1;
+      config.is_bit_vectorized = false;
       config.num_cpu_threads = 0;
       config.uniform = false;
       config.mem_access_opt.clear();
@@ -847,11 +1032,14 @@ class ASTBuilder {
 
   std::vector<Block *> stack_;
   std::vector<LoopState> loop_state_stack_;
+  bool is_kernel_{false};
   Arch arch_;
   ForLoopDecoratorRecorder for_loop_dec_;
+  int id_counter_{0};
 
  public:
-  ASTBuilder(Block *initial, Arch arch) : arch_(arch) {
+  ASTBuilder(Block *initial, Arch arch, bool is_kernel)
+      : is_kernel_(is_kernel), arch_(arch) {
     stack_.push_back(initial);
     loop_state_stack_.push_back(None);
   }
@@ -861,19 +1049,30 @@ class ASTBuilder {
   Block *current_block();
   Stmt *get_last_stmt();
   void stop_gradient(SNode *);
-  void insert_assignment(Expr &lhs, const Expr &rhs);
-  Expr make_var(const Expr &x);
+  void insert_assignment(Expr &lhs,
+                         const Expr &rhs,
+                         const DebugInfo &dbg_info = DebugInfo());
+  Expr make_var(const Expr &x, const DebugInfo &dbg_info = DebugInfo());
   void insert_for(const Expr &s,
                   const Expr &e,
                   const std::function<void(Expr)> &func);
 
+  Expr make_id_expr(const std::string &name);
+  Expr make_matrix_expr(const std::vector<int> &shape,
+                        const DataType &dt,
+                        const std::vector<Expr> &elements,
+                        const DebugInfo &dbg_info = DebugInfo());
   Expr insert_thread_idx_expr();
-  Expr insert_patch_idx_expr();
-  void create_kernel_exprgroup_return(const ExprGroup &group);
-  void create_print(std::vector<std::variant<Expr, std::string>> contents);
+  Expr insert_patch_idx_expr(const DebugInfo &dbg_info = DebugInfo());
+  void create_kernel_exprgroup_return(const ExprGroup &group,
+                                      const DebugInfo &dbg_info = DebugInfo());
+  void create_print(std::vector<std::variant<Expr, std::string>> contents,
+                    std::vector<std::optional<std::string>> formats,
+                    const DebugInfo &dbg_info = DebugInfo());
   void begin_func(const std::string &funcid);
   void end_func(const std::string &funcid);
-  void begin_frontend_if(const Expr &cond);
+  void begin_frontend_if(const Expr &cond,
+                         const DebugInfo &dbg_info = DebugInfo());
   void begin_frontend_if_true();
   void begin_frontend_if_false();
   void insert_external_func_call(std::size_t func_addr,
@@ -881,33 +1080,85 @@ class ASTBuilder {
                                  std::string filename,
                                  std::string funcname,
                                  const ExprGroup &args,
-                                 const ExprGroup &outputs);
-  Expr expr_alloca();
-  Expr expr_alloca_local_tensor(const std::vector<int> &shape,
+                                 const ExprGroup &outputs,
+                                 const DebugInfo &dbg_info = DebugInfo());
+  Expr expr_alloca(const DebugInfo &dbg_info = DebugInfo());
+  Expr expr_alloca_shared_array(const std::vector<int> &shape,
                                 const DataType &element_type,
-                                const ExprGroup &elements);
-  void expr_assign(const Expr &lhs, const Expr &rhs, std::string tb);
+                                const DebugInfo &dbg_info = DebugInfo());
+  Expr expr_subscript(const Expr &expr,
+                      const ExprGroup &indices,
+                      const DebugInfo &dbg_info = DebugInfo());
+
+  Expr mesh_index_conversion(mesh::MeshPtr mesh_ptr,
+                             mesh::MeshElementType idx_type,
+                             const Expr &idx,
+                             mesh::ConvType &conv_type,
+                             const DebugInfo &dbg_info = DebugInfo());
+
+  void expr_assign(const Expr &lhs,
+                   const Expr &rhs,
+                   const DebugInfo &dbg_info = DebugInfo());
+  std::optional<Expr> insert_func_call(Function *func,
+                                       const ExprGroup &args,
+                                       const DebugInfo &dbg_info = DebugInfo());
   void create_assert_stmt(const Expr &cond,
                           const std::string &msg,
-                          const std::vector<Expr> &args);
-  void begin_frontend_range_for(const Expr &i, const Expr &s, const Expr &e);
-  void begin_frontend_struct_for(const ExprGroup &loop_vars,
-                                 const Expr &global);
+                          const std::vector<Expr> &args,
+                          const DebugInfo &dbg_info = DebugInfo());
+  void begin_frontend_range_for(const Expr &i,
+                                const Expr &s,
+                                const Expr &e,
+                                const DebugInfo &dbg_info = DebugInfo());
+  void begin_frontend_struct_for_on_snode(
+      const ExprGroup &loop_vars,
+      SNode *snode,
+      const DebugInfo &dbg_info = DebugInfo());
+  void begin_frontend_struct_for_on_external_tensor(
+      const ExprGroup &loop_vars,
+      const Expr &external_tensor,
+      const DebugInfo &dbg_info = DebugInfo());
   void begin_frontend_mesh_for(const Expr &i,
                                const mesh::MeshPtr &mesh_ptr,
-                               const mesh::MeshElementType &element_type);
-  void begin_frontend_while(const Expr &cond);
-  void insert_break_stmt();
-  void insert_continue_stmt();
+                               const mesh::MeshElementType &element_type,
+                               const DebugInfo &dbg_info = DebugInfo());
+  void begin_frontend_while(const Expr &cond,
+                            const DebugInfo &dbg_info = DebugInfo());
+  void insert_break_stmt(const DebugInfo &dbg_info = DebugInfo());
+  void insert_continue_stmt(const DebugInfo &dbg_info = DebugInfo());
   void insert_expr_stmt(const Expr &val);
-  void insert_snode_activate(SNode *snode, const ExprGroup &expr_group);
-  void insert_snode_deactivate(SNode *snode, const ExprGroup &expr_group);
+  void insert_snode_activate(SNode *snode,
+                             const ExprGroup &expr_group,
+                             const DebugInfo &dbg_info = DebugInfo());
+  void insert_snode_deactivate(SNode *snode,
+                               const ExprGroup &expr_group,
+                               const DebugInfo &dbg_info = DebugInfo());
+  Expr make_texture_op_expr(const TextureOpType &op,
+                            const Expr &texture_ptr,
+                            const ExprGroup &args,
+                            const DebugInfo &dbg_info = DebugInfo());
+  /*
+   * This function allocates the space for a new item (a struct or a scalar)
+   * in the Dynamic SNode, and assigns values to the elements inside it.
+   *
+   * When appending a struct, the size of vals must be equal to
+   * the number of elements in the struct. When appending a scalar,
+   * the size of vals must be one.
+   */
+  Expr snode_append(SNode *snode,
+                    const ExprGroup &indices,
+                    const std::vector<Expr> &vals);
+  Expr snode_is_active(SNode *snode, const ExprGroup &indices);
+  Expr snode_length(SNode *snode, const ExprGroup &indices);
+  Expr snode_get_addr(SNode *snode, const ExprGroup &indices);
+
+  std::vector<Expr> expand_exprs(const std::vector<Expr> &exprs);
 
   void create_scope(std::unique_ptr<Block> &list, LoopType tp = NotLoop);
   void pop_scope();
 
-  void bit_vectorize(int v) {
-    for_loop_dec_.config.bit_vectorize = v;
+  void bit_vectorize() {
+    for_loop_dec_.config.is_bit_vectorized = true;
   }
 
   void parallelize(int v) {
@@ -919,7 +1170,11 @@ class ASTBuilder {
   }
 
   void block_dim(int v) {
-    TI_ASSERT(bit::is_power_of_two(v));
+    if (arch_ == Arch::cuda || arch_ == Arch::vulkan || arch_ == Arch::amdgpu) {
+      TI_ASSERT((v % 32 == 0) || bit::is_power_of_two(v));
+    } else {
+      TI_ASSERT(bit::is_power_of_two(v));
+    }
     for_loop_dec_.config.block_dim = v;
   }
 
@@ -930,6 +1185,10 @@ class ASTBuilder {
   void reset_snode_access_flag() {
     for_loop_dec_.reset();
   }
+
+  Identifier get_next_id(const std::string &name = "") {
+    return Identifier(id_counter_++, name);
+  }
 };
 
 class FrontendContext {
@@ -938,21 +1197,23 @@ class FrontendContext {
   std::unique_ptr<Block> root_node_;
 
  public:
-  FrontendContext(Arch arch);
+  explicit FrontendContext(Arch arch, bool is_kernel) {
+    root_node_ = std::make_unique<Block>();
+    current_builder_ =
+        std::make_unique<ASTBuilder>(root_node_.get(), arch, is_kernel);
+  }
 
   ASTBuilder &builder() {
     return *current_builder_;
   }
-
-  IRNode *root();
 
   std::unique_ptr<Block> get_root() {
     return std::move(root_node_);
   }
 };
 
-void flatten_lvalue(Expr expr, Expression::FlattenContext *ctx);
+Stmt *flatten_lvalue(Expr expr, Expression::FlattenContext *ctx);
 
-void flatten_rvalue(Expr expr, Expression::FlattenContext *ctx);
+Stmt *flatten_rvalue(Expr expr, Expression::FlattenContext *ctx);
 
-TLANG_NAMESPACE_END
+}  // namespace taichi::lang

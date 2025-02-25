@@ -15,15 +15,27 @@ count = ti.field(int, shape=(n, n))  # count of neighbours
 
 
 @ti.func
+def get_alive(i, j):
+    return alive[i, j] if 0 <= i < n and 0 <= j < n else 0
+
+
+@ti.func
 def get_count(i, j):
-    return (alive[i - 1, j] + alive[i + 1, j] + alive[i, j - 1] +
-            alive[i, j + 1] + alive[i - 1, j - 1] + alive[i + 1, j - 1] +
-            alive[i - 1, j + 1] + alive[i + 1, j + 1])
+    return (
+        get_alive(i - 1, j)
+        + get_alive(i + 1, j)
+        + get_alive(i, j - 1)
+        + get_alive(i, j + 1)
+        + get_alive(i - 1, j - 1)
+        + get_alive(i + 1, j - 1)
+        + get_alive(i - 1, j + 1)
+        + get_alive(i + 1, j + 1)
+    )
 
 
 # See https://www.conwaylife.com/wiki/Cellular_automaton#Rules for more rules
 B, S = [3], [2, 3]
-#B, S = [2], [0]
+# B, S = [2], [0]
 
 
 @ti.func
@@ -59,12 +71,12 @@ def init():
 
 
 def main():
-    gui = ti.GUI('Game of Life', (img_size, img_size))
+    gui = ti.GUI("Game of Life", (img_size, img_size))
     gui.fps_limit = 15
 
-    print('[Hint] Press `r` to reset')
-    print('[Hint] Press SPACE to pause')
-    print('[Hint] Click LMB, RMB and drag to add alive / dead cells')
+    print("[Hint] Press `r` to reset")
+    print("[Hint] Press SPACE to pause")
+    print("[Hint] Click LMB, RMB and drag to add alive / dead cells")
 
     init()
     paused = False
@@ -74,7 +86,7 @@ def main():
                 gui.running = False
             elif e.key == gui.SPACE:
                 paused = not paused
-            elif e.key == 'r':
+            elif e.key == "r":
                 alive.fill(0)
 
         if gui.is_pressed(gui.LMB, gui.RMB):
@@ -85,10 +97,9 @@ def main():
         if not paused:
             run()
 
-        gui.set_image(
-            ti.tools.imresize(alive, img_size).astype(np.uint8) * 255)
+        gui.set_image(ti.tools.imresize(alive, img_size).astype(np.uint8) * 255)
         gui.show()
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     main()

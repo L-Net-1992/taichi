@@ -9,7 +9,7 @@
 #include <unordered_map>
 #include <utility>
 
-TLANG_NAMESPACE_BEGIN
+namespace taichi::lang {
 
 namespace irpass {
 namespace {
@@ -17,6 +17,8 @@ bool demotable_axis_load(Stmt *stmt) {
   // Stmt involving simple arithmetic of ExternalTensorShapeAlongAxisStmt
   // shouldn't be saved in global tmp, just clone them to each shader
   // separately.
+  if (stmt->is<GlobalLoadStmt>())
+    return false;
   int n_op = stmt->num_operands();
   if (n_op == 0) {
     return stmt->is<ExternalTensorShapeAlongAxisStmt>() ||
@@ -38,7 +40,7 @@ class SquashPtrOffset : public IRVisitor {
   void visit(Stmt *stmt) override {
     top_level_ptr_ = stmt;
   }
-  void visit(PtrOffsetStmt *stmt) override {
+  void visit(MatrixPtrStmt *stmt) override {
     stmt->origin->accept(this);
   }
   static Stmt *run(Stmt *root) {
@@ -71,8 +73,10 @@ class Offloader {
     auto root_statements = std::move(root_block->statements);
     root_block->statements.clear();
     const auto arch = config.arch;
-    auto pending_serial_statements =
-        Stmt::make_typed<OffloadedStmt>(OffloadedStmt::TaskType::serial, arch);
+    Kernel *kernel = dynamic_cast<Kernel *>(root_block->parent_callable());
+    TI_ASSERT(kernel);
+    auto pending_serial_statements = Stmt::make_typed<OffloadedStmt>(
+        OffloadedStmt::TaskType::serial, arch, kernel);
     pending_serial_statements->grid_dim = 1;
     pending_serial_statements->block_dim = 1;
 
@@ -80,7 +84,7 @@ class Offloader {
       if (!pending_serial_statements->body->statements.empty()) {
         root_block->insert(std::move(pending_serial_statements));
         pending_serial_statements = Stmt::make_typed<OffloadedStmt>(
-            OffloadedStmt::TaskType::serial, arch);
+            OffloadedStmt::TaskType::serial, arch, kernel);
         pending_serial_statements->grid_dim = 1;
         pending_serial_statements->block_dim = 1;
       }
@@ -92,7 +96,7 @@ class Offloader {
       if (auto s = stmt->cast<RangeForStmt>(); s && !s->strictly_serialized) {
         assemble_serial_statements();
         auto offloaded = Stmt::make_typed<OffloadedStmt>(
-            OffloadedStmt::TaskType::range_for, arch);
+            OffloadedStmt::TaskType::range_for, arch, kernel);
         // offloaded->body is an empty block now.
         offloaded->grid_dim = config.saturating_grid_dim;
         if (s->block_dim == 0) {
@@ -102,7 +106,7 @@ class Offloader {
         }
         if (auto val = s->begin->cast<ConstStmt>()) {
           offloaded->const_begin = true;
-          offloaded->begin_value = val->val[0].val_int32();
+          offloaded->begin_value = val->val.val_int32();
         } else {
           offloaded_ranges.begin_stmts.insert(
               std::make_pair(offloaded.get(), s->begin));
@@ -110,9 +114,10 @@ class Offloader {
 
         if (auto val = s->end->cast<ConstStmt>()) {
           offloaded->const_end = true;
-          offloaded->end_value = val->val[0].val_int32();
+          offloaded->end_value = val->val.val_int32();
         } else {
-          if ((arch == Arch::opengl || arch == Arch::vulkan) &&
+          if ((arch == Arch::opengl || arch == Arch::vulkan ||
+               arch == Arch::gles || arch == Arch::metal) &&
               demotable_axis_load(s->end)) {
             // TODO: We need to update codegen for each backend gradually so
             // let's limit it to opengl backend for now.
@@ -138,7 +143,7 @@ class Offloader {
       } else if (auto st = stmt->cast<MeshForStmt>()) {
         assemble_serial_statements();
         auto offloaded = Stmt::make_typed<OffloadedStmt>(
-            OffloadedStmt::TaskType::mesh_for, arch);
+            OffloadedStmt::TaskType::mesh_for, arch, kernel);
         offloaded->grid_dim = config.saturating_grid_dim;
         if (st->block_dim == 0) {
           offloaded->block_dim = Program::default_block_dim(config);
@@ -186,16 +191,18 @@ class Offloader {
     const bool demotable =
         (leaf->is_path_all_dense && config.demote_dense_struct_fors);
     const auto arch = config.arch;
+    Kernel *kernel = dynamic_cast<Kernel *>(root_block->parent_callable());
+    TI_ASSERT(kernel);
     if (!demotable) {
       for (int i = 1; i < path.size(); i++) {
         auto snode_child = path[i];
-        if ((snode_child->type == SNodeType::bit_array ||
-             snode_child->type == SNodeType::bit_struct) &&
-            i == path.size() - 1) {
+        if (snode_child->type == SNodeType::quant_array &&
+            for_stmt->is_bit_vectorized) {
+          TI_ASSERT(i == path.size() - 1);
           continue;
         }
         auto offloaded_clear_list = Stmt::make_typed<OffloadedStmt>(
-            OffloadedStmt::TaskType::serial, arch);
+            OffloadedStmt::TaskType::serial, arch, kernel);
         offloaded_clear_list->body->insert(
             Stmt::make<ClearListStmt>(snode_child));
         offloaded_clear_list->grid_dim = 1;
@@ -205,7 +212,7 @@ class Offloader {
         // problems when fused with other serial tasks.
         root_block->insert(std::move(offloaded_clear_list));
         auto offloaded_listgen = Stmt::make_typed<OffloadedStmt>(
-            OffloadedStmt::TaskType::listgen, arch);
+            OffloadedStmt::TaskType::listgen, arch, kernel);
         offloaded_listgen->snode = snode_child;
         offloaded_listgen->grid_dim = config.saturating_grid_dim;
         offloaded_listgen->block_dim =
@@ -217,7 +224,7 @@ class Offloader {
     }
 
     auto offloaded_struct_for = Stmt::make_typed<OffloadedStmt>(
-        OffloadedStmt::TaskType::struct_for, arch);
+        OffloadedStmt::TaskType::struct_for, arch, kernel);
 
     offloaded_struct_for->index_offsets = for_stmt->index_offsets;
 
@@ -232,8 +239,8 @@ class Offloader {
       if (for_stmt->block_dim > snode_num_elements) {
         TI_WARN(
             "Specified block dim {} is bigger than SNode element size {}. "
-            "Clipping.",
-            for_stmt->block_dim, snode_num_elements);
+            "Clipping.\n{}",
+            for_stmt->block_dim, snode_num_elements, for_stmt->get_tb());
         offloaded_struct_for->block_dim = snode_num_elements;
       } else {
         offloaded_struct_for->block_dim = for_stmt->block_dim;
@@ -248,6 +255,7 @@ class Offloader {
     }
 
     offloaded_struct_for->snode = for_stmt->snode;
+    offloaded_struct_for->is_bit_vectorized = for_stmt->is_bit_vectorized;
     offloaded_struct_for->num_cpu_threads =
         std::min(for_stmt->num_cpu_threads, config.cpu_max_num_threads);
     offloaded_struct_for->mem_access_opt = mem_access_opt;
@@ -334,7 +342,6 @@ class IdentifyValuesUsedInOtherOffloads : public BasicStmtVisitor {
   }
 
   std::size_t allocate_global(DataType type) {
-    TI_ASSERT(type->vector_width() == 1 || type->is<TensorType>());
     auto ret = global_offset_;
     if (type->is<TensorType>()) {
       auto tensor_type = type->cast<TensorType>();
@@ -383,9 +390,11 @@ class IdentifyValuesUsedInOtherOffloads : public BasicStmtVisitor {
     auto top_level_ptr = SquashPtrOffset::run(stmt);
     // We don't support storing a pointer for now.
     if (top_level_ptr->is<GlobalPtrStmt>() || stmt->is<ExternalPtrStmt>() ||
-        (stmt->is<ArgLoadStmt>() && stmt->as<ArgLoadStmt>()->is_ptr))
+        (stmt->is<ArgLoadStmt>() && (stmt->as<ArgLoadStmt>()->is_ptr ||
+                                     !stmt->as<ArgLoadStmt>()->create_load)))
       return;
-    if ((config_.arch == Arch::opengl || config_.arch == Arch::vulkan) &&
+    if ((config_.arch == Arch::opengl || config_.arch == Arch::vulkan ||
+         config_.arch == Arch::gles || config_.arch == Arch::metal) &&
         demotable_axis_load(stmt))
       return;
     // Not yet allocated
@@ -439,8 +448,8 @@ class PromoteIntermediateToGlobalTmp : public BasicStmtVisitor {
 
  private:
   explicit PromoteIntermediateToGlobalTmp(
-      const StmtToOffsetMap &local_to_global_offset)
-      : local_to_global_offset_(local_to_global_offset) {
+      const StmtToOffsetMap *local_to_global_offset)
+      : local_to_global_offset_(*local_to_global_offset) {
     allow_undefined_visitor = true;
     invoke_default_visitor = true;
   }
@@ -451,20 +460,20 @@ class PromoteIntermediateToGlobalTmp : public BasicStmtVisitor {
         local_to_global_offset_.find(stmt) != local_to_global_offset_.end() &&
         stored_to_global_.find(stmt) == stored_to_global_.end()) {
       stored_to_global_.insert(stmt);
-      auto offset = local_to_global_offset_[stmt];
+      auto offset = local_to_global_offset_.at(stmt);
       auto ptr = stmt->insert_after_me(
           Stmt::make<GlobalTemporaryStmt>(offset, stmt->ret_type));
       ptr->insert_after_me(Stmt::make<GlobalStoreStmt>(ptr, stmt));
     }
   }
 
-  static void run(IRNode *root, const StmtToOffsetMap &local_to_global_offset) {
+  static void run(IRNode *root, const StmtToOffsetMap *local_to_global_offset) {
     PromoteIntermediateToGlobalTmp pass(local_to_global_offset);
     root->accept(&pass);
   }
 
  private:
-  StmtToOffsetMap local_to_global_offset_;
+  const StmtToOffsetMap &local_to_global_offset_;
   std::set<Stmt *> stored_to_global_;
 };
 
@@ -474,11 +483,11 @@ class FixCrossOffloadReferences : public BasicStmtVisitor {
  private:
   FixCrossOffloadReferences(
       const CompileConfig &config,
-      const StmtToOffsetMap &local_to_global_offset,
-      const std::unordered_map<Stmt *, Stmt *> &stmt_to_offloaded,
+      const StmtToOffsetMap *local_to_global_offset,
+      std::unordered_map<Stmt *, Stmt *> &stmt_to_offloaded,
       OffloadedRanges *offloaded_ranges)
       : config_(config),
-        local_to_global_offset_(local_to_global_offset),
+        local_to_global_offset_(*local_to_global_offset),
         stmt_to_offloaded_(stmt_to_offloaded),
         offloaded_ranges_(offloaded_ranges) {
     allow_undefined_visitor = true;
@@ -496,9 +505,8 @@ class FixCrossOffloadReferences : public BasicStmtVisitor {
                            offloaded_ranges_->begin_stmts.find(stmt)->second) !=
                            local_to_global_offset_.end(),
                        "Begin fails.")
-        stmt->begin_offset =
-            local_to_global_offset_[offloaded_ranges_->begin_stmts.find(stmt)
-                                        ->second];
+        stmt->begin_offset = local_to_global_offset_.at(
+            offloaded_ranges_->begin_stmts.find(stmt)->second);
       }
       if (!stmt->const_end) {
         if (stmt->end_stmt) {
@@ -511,9 +519,8 @@ class FixCrossOffloadReferences : public BasicStmtVisitor {
                              offloaded_ranges_->end_stmts.find(stmt)->second) !=
                              local_to_global_offset_.end(),
                          "End fails.")
-          stmt->end_offset =
-              local_to_global_offset_[offloaded_ranges_->end_stmts.find(stmt)
-                                          ->second];
+          stmt->end_offset = local_to_global_offset_.at(
+              offloaded_ranges_->end_stmts.find(stmt)->second);
         }
       }
     }
@@ -524,38 +531,22 @@ class FixCrossOffloadReferences : public BasicStmtVisitor {
     if (local_to_global_offset_.find(stmt) == local_to_global_offset_.end())
       return;
     VecStatement replacement;
-    auto ret_type = stmt->ret_type;
-    local_to_global_vector_type_[stmt] = ret_type;
+    auto alloca_type = stmt->ret_type.ptr_removed();
+    local_to_global_vector_type_[stmt] = alloca_type;
     auto ptr = replacement.push_back<GlobalTemporaryStmt>(
-        local_to_global_offset_[stmt], ret_type);
+        local_to_global_offset_.at(stmt), alloca_type);
     auto offloaded = stmt_to_offloaded_[stmt];
     stmt_to_offloaded_[ptr] = offloaded;
-    if (auto tensor_type = stmt->ret_type->cast<TensorType>()) {
-      LaneAttribute<TypedConstant> zero(std::vector<TypedConstant>(
-          1, TypedConstant(tensor_type->get_element_type())));
-      auto const_zero_stmt = replacement.push_back<ConstStmt>(zero);
-      stmt_to_offloaded_[const_zero_stmt] = offloaded;
-      for (int i = 0; i < tensor_type->get_num_elements(); ++i) {
-        LaneAttribute<TypedConstant> offset(std::vector<TypedConstant>(
-            1, TypedConstant(i *
-                             data_type_size(tensor_type->get_element_type()))));
-        auto const_offset_stmt = replacement.push_back<ConstStmt>(offset);
-        auto ptr_offset_stmt =
-            replacement.push_back<PtrOffsetStmt>(ptr, const_offset_stmt);
-        auto global_store_stmt = replacement.push_back<GlobalStoreStmt>(
-            ptr_offset_stmt, const_zero_stmt);
-        stmt_to_offloaded_[const_offset_stmt] = offloaded;
-        stmt_to_offloaded_[ptr_offset_stmt] = offloaded;
-        stmt_to_offloaded_[global_store_stmt] = offloaded;
-      }
-    } else {
-      LaneAttribute<TypedConstant> zeros(std::vector<TypedConstant>(
-          stmt->width(), TypedConstant(stmt->ret_type)));
-      auto const_zeros = replacement.push_back<ConstStmt>(zeros);
-      auto global_store_stmt =
-          replacement.push_back<GlobalStoreStmt>(ptr, const_zeros);
-      stmt_to_offloaded_[global_store_stmt] = offloaded;
+
+    auto stmts = get_const_stmt_with_value(alloca_type, 0);
+    for (auto &stmt : stmts) {
+      replacement.push_back(std::move(stmt));
     }
+    Stmt *const_stmt = replacement.back().get();
+
+    auto global_store_stmt =
+        replacement.push_back<GlobalStoreStmt>(ptr, const_stmt);
+    stmt_to_offloaded_[global_store_stmt] = offloaded;
 
     stmt->parent->replace_with(stmt, std::move(replacement), false);
     // To deal with the same offloaded visit_operand()
@@ -565,8 +556,7 @@ class FixCrossOffloadReferences : public BasicStmtVisitor {
   // Replace local LD/ST with global LD/ST
   void visit(LocalLoadStmt *stmt) override {
     generic_visit(stmt);
-    TI_ASSERT(stmt->width() == 1)
-    auto ptr = stmt->src[0].var;
+    auto ptr = stmt->src;
     auto top_level_ptr = SquashPtrOffset::run(ptr);
     if (top_level_ptr->is<GlobalTemporaryStmt>()) {
       VecStatement replacement;
@@ -615,7 +605,7 @@ class FixCrossOffloadReferences : public BasicStmtVisitor {
     if (local_to_global_offset_.find(op) == local_to_global_offset_.end()) {
       // For stmts that are not promoted to global tmp, clone them into current
       // offloaded task. E.g.
-      // ConstStmt/PtrOffsetStmt/GlobalTemporaryStmt/ExternalTensorShapeAlongAxisStmt
+      // ConstStmt/MatrixPtrStmt/GlobalTemporaryStmt/ExternalTensorShapeAlongAxisStmt
       // etc.
       auto copy = op->clone();
       auto pcopy = copy.get();
@@ -625,7 +615,7 @@ class FixCrossOffloadReferences : public BasicStmtVisitor {
       generic_visit(pcopy);
     } else {
       auto global_temporary = Stmt::make<GlobalTemporaryStmt>(
-          local_to_global_offset_[op], op->ret_type);
+          local_to_global_offset_.at(op), op->ret_type);
       stmt_to_offloaded_[global_temporary.get()] = offloaded;
       stmt->set_operand(index, global_temporary.get());
       if (op->is<AllocaStmt>() || op->ret_type.is_pointer()) {
@@ -652,7 +642,6 @@ class FixCrossOffloadReferences : public BasicStmtVisitor {
   }
 
   void visit(Stmt *stmt) override {
-    TI_ASSERT(stmt->width() == 1)
     generic_visit(stmt);
   }
 
@@ -663,8 +652,8 @@ class FixCrossOffloadReferences : public BasicStmtVisitor {
  public:
   static void run(IRNode *root,
                   const CompileConfig &config,
-                  const StmtToOffsetMap &local_to_global_offset,
-                  const std::unordered_map<Stmt *, Stmt *> &stmt_to_offloaded,
+                  const StmtToOffsetMap *local_to_global_offset,
+                  std::unordered_map<Stmt *, Stmt *> &stmt_to_offloaded,
                   OffloadedRanges *offloaded_ranges) {
     FixCrossOffloadReferences pass(config, local_to_global_offset,
                                    stmt_to_offloaded, offloaded_ranges);
@@ -673,8 +662,8 @@ class FixCrossOffloadReferences : public BasicStmtVisitor {
 
  private:
   [[maybe_unused]] const CompileConfig &config_;
-  StmtToOffsetMap local_to_global_offset_;
-  std::unordered_map<Stmt *, Stmt *> stmt_to_offloaded_;
+  const StmtToOffsetMap &local_to_global_offset_;
+  std::unordered_map<Stmt *, Stmt *> &stmt_to_offloaded_;
   OffloadedRanges *const offloaded_ranges_;
   std::unordered_map<Stmt *, DataType> local_to_global_vector_type_;
 };
@@ -682,6 +671,8 @@ class FixCrossOffloadReferences : public BasicStmtVisitor {
 void insert_gc(IRNode *root, const CompileConfig &config) {
   auto *b = dynamic_cast<Block *>(root);
   TI_ASSERT(b);
+  Kernel *kernel = dynamic_cast<Kernel *>(b->parent_callable());
+  TI_ASSERT(kernel);
   std::vector<std::pair<int, std::vector<SNode *>>> gc_statements;
   for (int i = 0; i < (int)b->statements.size(); i++) {
     auto snodes =
@@ -695,7 +686,7 @@ void insert_gc(IRNode *root, const CompileConfig &config) {
     for (auto *snode : snodes) {
       if (is_gc_able(snode->type)) {
         auto gc_task = Stmt::make_typed<OffloadedStmt>(
-            OffloadedStmt::TaskType::gc, config.arch);
+            OffloadedStmt::TaskType::gc, config.arch, kernel);
         gc_task->snode = snode;
         b->insert(std::move(gc_task), i + 1);
       }
@@ -770,6 +761,11 @@ class AssociateContinueScope : public BasicStmtVisitor {
 };
 
 }  // namespace
+void associate_continue_scope(IRNode *root, const CompileConfig &config) {
+  AssociateContinueScope::run(root);
+  type_check(root, config);
+  re_id(root);
+}
 
 void offload(IRNode *root, const CompileConfig &config) {
   TI_AUTO_PROF;
@@ -779,19 +775,15 @@ void offload(IRNode *root, const CompileConfig &config) {
     auto stmt_to_offloaded = StmtToOffloaded::run(root);
     const auto local_to_global_offset = IdentifyValuesUsedInOtherOffloads::run(
         root, config, stmt_to_offloaded, &offloaded_ranges);
-    PromoteIntermediateToGlobalTmp::run(root, local_to_global_offset);
+    PromoteIntermediateToGlobalTmp::run(root, &local_to_global_offset);
     stmt_to_offloaded = StmtToOffloaded::run(root);
-    FixCrossOffloadReferences::run(root, config, local_to_global_offset,
+    FixCrossOffloadReferences::run(root, config, &local_to_global_offset,
                                    stmt_to_offloaded, &offloaded_ranges);
   }
   insert_gc(root, config);
-  // TODO(k-ye): Move this into its own pass. However, we need to wait for all
-  // backends to integrate with https://github.com/taichi-dev/taichi/pull/700
-  AssociateContinueScope::run(root);
-  type_check(root, config);
-  re_id(root);
+  associate_continue_scope(root, config);
 }
 
 }  // namespace irpass
 
-TLANG_NAMESPACE_END
+}  // namespace taichi::lang

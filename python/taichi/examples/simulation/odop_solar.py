@@ -29,12 +29,12 @@ class SolarSystem:
             self.x[i] = self.center[None] + offset  # Offset from center
             self.v[i] = [-offset.y, offset.x]  # Perpendicular to offset
             self.v[i] += self.random_vector(0.02)  # Random velocity noise
-            self.v[i] *= 1 / offset.norm()**1.5  # Kepler's third law
+            self.v[i] *= 1 / offset.norm() ** 1.5  # Kepler's third law
 
     @ti.func
     def gravity(self, pos):  # Compute gravity at pos
         offset = -(pos - self.center[None])
-        return offset / offset.norm()**3
+        return offset / offset.norm() ** 3
 
     @ti.kernel
     def integrate(self):  # Semi-implicit Euler time integration
@@ -42,22 +42,30 @@ class SolarSystem:
             self.v[i] += self.dt * self.gravity(self.x[i])
             self.x[i] += self.dt * self.v[i]
 
-    def render(self, gui):  # Render the scene on GUI
-        gui.circle([0.5, 0.5], radius=10, color=0xffaa88)
-        gui.circles(solar.x.to_numpy(), radius=3, color=0xffffff)
+    @staticmethod
+    def render(gui):  # Render the scene on GUI
+        gui.circle([0.5, 0.5], radius=10, color=0xFFAA88)
+        gui.circles(solar.x.to_numpy(), radius=3, color=0xFFFFFF)
 
 
-solar = SolarSystem(8, 0.0001)
-solar.center[None] = [0.5, 0.5]
-solar.initialize_particles()
+def main():
+    global solar
 
-gui = ti.GUI("Solar System", background_color=0x0071a)
-while gui.running:
-    if gui.get_event() and gui.is_pressed(gui.SPACE):
-        solar.initialize_particles()  # reinitialize when space bar pressed.
+    solar = SolarSystem(8, 0.0001)
+    solar.center[None] = [0.5, 0.5]
+    solar.initialize_particles()
 
-    for i in range(10):  # Time integration
-        solar.integrate()
+    gui = ti.GUI("Solar System", background_color=0x0071A)
+    while gui.running:
+        if gui.get_event() and gui.is_pressed(gui.SPACE):
+            solar.initialize_particles()  # reinitialize when space bar pressed.
 
-    solar.render(gui)
-    gui.show()
+        for _ in range(10):  # Time integration
+            solar.integrate()
+
+        solar.render(gui)
+        gui.show()
+
+
+if __name__ == "__main__":
+    main()

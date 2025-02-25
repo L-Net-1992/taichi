@@ -1,9 +1,9 @@
 # Optional environment variables supported by setup.py:
 #   {DEBUG, RELWITHDEBINFO, MINSIZEREL}
-#     build the C++ taichi_core extension with various build types.
+#     build the C++ taichi_python extension with various build types.
 #
 #   TAICHI_CMAKE_ARGS
-#     extra cmake args for C++ taichi_core extension.
+#     extra cmake args for C++ taichi_python extension.
 
 import glob
 import multiprocessing
@@ -15,24 +15,25 @@ import sys
 from distutils.command.clean import clean
 from distutils.dir_util import remove_tree
 
-from setuptools import Extension, find_packages, setup
-from setuptools.command.build_ext import build_ext
-from setuptools.command.build_py import build_py
-from setuptools.command.egg_info import egg_info
+from setuptools import find_packages
+from skbuild import setup
+from skbuild.command.egg_info import egg_info
+
+root_dir = os.path.dirname(os.path.abspath(__file__))
 
 classifiers = [
-    'Development Status :: 2 - Pre-Alpha',
-    'Topic :: Software Development :: Compilers',
-    'Topic :: Multimedia :: Graphics',
-    'Topic :: Games/Entertainment :: Simulation',
-    'Intended Audience :: Science/Research',
-    'Intended Audience :: Developers',
-    'License :: OSI Approved :: MIT License',
-    'Programming Language :: Python :: 3.6',
-    'Programming Language :: Python :: 3.7',
-    'Programming Language :: Python :: 3.8',
-    'Programming Language :: Python :: 3.9',
-    'Programming Language :: Python :: 3.10',
+    "Development Status :: 5 - Production/Stable",
+    "Topic :: Software Development :: Compilers",
+    "Topic :: Multimedia :: Graphics",
+    "Topic :: Games/Entertainment :: Simulation",
+    "Intended Audience :: Science/Research",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: Apache Software License",
+    "Programming Language :: Python :: 3.7",
+    "Programming Language :: Python :: 3.8",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
 ]
 
 
@@ -40,255 +41,211 @@ def get_version():
     if os.getenv("RELEASE_VERSION"):
         version = os.environ["RELEASE_VERSION"]
     else:
-        version_file = os.path.join(os.path.dirname(__file__), 'version.txt')
-        with open(version_file, 'r') as f:
+        version_file = os.path.join(os.path.dirname(__file__), "version.txt")
+        with open(version_file, "r") as f:
             version = f.read().strip()
     return version.lstrip("v")
 
 
-project_name = os.getenv('PROJECT_NAME', 'taichi')
+project_name = os.getenv("PROJECT_NAME", "taichi")
 version = get_version()
-TI_VERSION_MAJOR, TI_VERSION_MINOR, TI_VERSION_PATCH = version.split('.')
+TI_VERSION_MAJOR, TI_VERSION_MINOR, TI_VERSION_PATCH = version.split(".")
 
-data_files = glob.glob('python/_lib/runtime/*')
+data_files = glob.glob("python/_lib/runtime/*")
 print(data_files)
-packages = find_packages('python')
+packages = find_packages("python")
 print(packages)
 
 # Our python package root dir is python/
-package_dir = 'python'
-
-root_dir = os.path.abspath(os.path.dirname(__file__))
-
-
-def get_python_executable():
-    return sys.executable.replace('\\', '/')
-
-
-def get_os_name():
-    name = platform.platform()
-    # in python 3.8, platform.platform() uses mac_ver() on macOS
-    # it will return 'macOS-XXXX' instead of 'Darwin-XXXX'
-    if name.lower().startswith('darwin') or name.lower().startswith('macos'):
-        return 'osx'
-    elif name.lower().startswith('windows'):
-        return 'win'
-    elif name.lower().startswith('linux'):
-        return 'linux'
-    elif 'bsd' in name.lower():
-        return 'unix'
-    assert False, "Unknown platform name %s" % name
+package_dir = "python"
 
 
 def remove_tmp(taichi_dir):
-    shutil.rmtree(os.path.join(taichi_dir, 'assets'), ignore_errors=True)
-
-
-def remove_files_with_extension(dir_name, extension):
-    for file in os.listdir(dir_name):
-        if file.endswith(extension):
-            os.remove(os.path.join(dir_name, file))
-
-
-class CMakeExtension(Extension):
-    def __init__(self, name):
-        Extension.__init__(self, name, sources=[])
+    shutil.rmtree(os.path.join(taichi_dir, "assets"), ignore_errors=True)
 
 
 class EggInfo(egg_info):
-    def run(self):
-        taichi_dir = os.path.join(package_dir, 'taichi')
-        remove_tmp(taichi_dir)
-
-        shutil.copytree('external/assets', os.path.join(taichi_dir, 'assets'))
-
-        egg_info.run(self)
+    def finalize_options(self, *args, **kwargs):
+        if "" not in self.distribution.package_dir:
+            # Issue#4975: skbuild loses the root package dir
+            self.distribution.package_dir[""] = package_dir
+        return super().finalize_options(*args, **kwargs)
 
 
-# python setup.py build runs the following commands in order:
-#   python setup.py build_py
-#   python setup.py build_ext
-class BuildPy(build_py):
-    def run(self):
-        build_py.run(self)
-        taichi_dir = os.path.join(package_dir, 'taichi')
-        remove_tmp(taichi_dir)
+def copy_assets():
+    taichi_dir = os.path.join(package_dir, "taichi")
+    remove_tmp(taichi_dir)
 
-
-class CMakeBuild(build_ext):
-    def parse_cmake_args_from_env(self):
-        # Source: TAICHI_CMAKE_ARGS=... python setup.py ...
-        import shlex
-        cmake_args = os.getenv('TAICHI_CMAKE_ARGS', '')
-        return shlex.split(cmake_args.strip())
-
-    def run(self):
-        try:
-            subprocess.check_call(['cmake', '--version'])
-        except OSError:
-            raise RuntimeError(
-                "CMake must be installed to build the following extensions: " +
-                ", ".join(e.name for e in self.extensions))
-
-        # CMakeLists.txt is in the same directory as this setup.py file
-        cmake_list_dir = root_dir
-        self.build_temp = os.path.join(cmake_list_dir, 'build')
-
-        build_directory = os.path.abspath(self.build_temp)
-
-        cmake_args = self.parse_cmake_args_from_env()
-
-        cmake_args += [
-            f'-DCMAKE_LIBRARY_OUTPUT_DIRECTORY={build_directory}',
-            f'-DPYTHON_EXECUTABLE={get_python_executable()}',
-            f'-DTI_VERSION_MAJOR={TI_VERSION_MAJOR}',
-            f'-DTI_VERSION_MINOR={TI_VERSION_MINOR}',
-            f'-DTI_VERSION_PATCH={TI_VERSION_PATCH}',
-        ]
-
-        emscriptened = os.getenv('TI_EMSCRIPTENED', '0') in ('1', 'ON')
-        if emscriptened:
-            cmake_args += ['-DTI_EMSCRIPTENED=ON']
-
-        if shutil.which('ninja'):
-            cmake_args += ['-GNinja']
-
-        cfg = 'Release'
-        if (os.getenv('DEBUG', '0') in ('1', 'ON')):
-            cfg = 'Debug'
-        elif (os.getenv('RELWITHDEBINFO', '0') in ('1', 'ON')):
-            cfg = 'RelWithDebInfo'
-        elif (os.getenv('MINSIZEREL', '0') in ('1', 'ON')):
-            cfg = 'MinSizeRel'
-
-        build_args = ['--config', cfg]
-
-        cmake_args += ['-DCMAKE_BUILD_TYPE=' + cfg]
-
-        # Assuming Makefiles
-        if get_os_name() != 'win':
-            num_threads = os.getenv('BUILD_NUM_THREADS',
-                                    multiprocessing.cpu_count())
-            build_args += ['--', f'-j{num_threads}']
-
-        self.build_args = build_args
-
-        env = os.environ.copy()
-        os.makedirs(self.build_temp, exist_ok=True)
-
-        print('-' * 10, 'Running CMake prepare', '-' * 40)
-        print(' '.join(['cmake', cmake_list_dir] + cmake_args))
-        subprocess.check_call(['cmake', cmake_list_dir] + cmake_args,
-                              cwd=self.build_temp,
-                              env=env)
-
-        print('-' * 10, 'Building extensions', '-' * 40)
-        cmake_cmd = ['cmake', '--build', '.'] + self.build_args
-        subprocess.check_call(cmake_cmd, cwd=self.build_temp)
-
-        self.prepare_package()
-
-    def prepare_package(self):
-        # We need to make sure these additional files are ready for
-        #   - develop mode: must exist in local python/taichi/lib/ folder
-        #   - install mode: must exist in self.build_lib/taichi/lib
-        base_dir = package_dir if self.inplace else self.build_lib
-        taichi_lib_dir = os.path.join(base_dir, 'taichi', '_lib')
-
-        runtime_dir = os.path.join(taichi_lib_dir, "runtime")
-        core_dir = os.path.join(taichi_lib_dir, "core")
-        os.makedirs(runtime_dir, exist_ok=True)
-        os.makedirs(core_dir, exist_ok=True)
-
-        if (get_os_name() == 'linux' or get_os_name() == 'unix'
-                or get_os_name() == 'osx'):
-            remove_files_with_extension(core_dir, ".so")
-        else:
-            remove_files_with_extension(core_dir, ".pyd")
-        if get_os_name() == 'osx':
-            remove_files_with_extension(runtime_dir, ".dylib")
-        remove_files_with_extension(runtime_dir, ".bc")
-
-        if get_os_name() == 'linux' or get_os_name() == 'unix':
-            self.copy_file(os.path.join(self.build_temp, 'libtaichi_core.so'),
-                           os.path.join(core_dir, 'taichi_core.so'))
-        elif get_os_name() == 'osx':
-            self.copy_file(
-                os.path.join(self.build_temp, 'libtaichi_core.dylib'),
-                os.path.join(core_dir, 'taichi_core.so'))
-            moltenvk_path = os.path.join(self.build_temp, 'libMoltenVK.dylib')
-            if os.path.exists(moltenvk_path):
-                self.copy_file(moltenvk_path,
-                               os.path.join(runtime_dir, 'libMoltenVK.dylib'))
-        else:
-            self.copy_file('runtimes/taichi_core.dll',
-                           os.path.join(core_dir, 'taichi_core.pyd'))
-
-        if get_os_name() != 'osx':
-            libdevice_path = 'external/cuda_libdevice/slim_libdevice.10.bc'
-            print("copying libdevice:", libdevice_path)
-            assert os.path.exists(libdevice_path)
-            self.copy_file(libdevice_path,
-                           os.path.join(runtime_dir, 'slim_libdevice.10.bc'))
-
-        llvm_runtime_dir = 'taichi/runtime/llvm'
-        for f in os.listdir(llvm_runtime_dir):
-            if f.startswith('runtime_') and f.endswith('.bc'):
-                print(f"Fetching runtime file {f} to {taichi_lib_dir} folder")
-                self.copy_file(os.path.join(llvm_runtime_dir, f), runtime_dir)
+    shutil.copytree("external/assets", os.path.join(taichi_dir, "assets"))
 
 
 class Clean(clean):
     def run(self):
         super().run()
-        self.build_temp = os.path.join(root_dir, 'build')
+        self.build_temp = os.path.join(root_dir, "_skbuild")
         if os.path.exists(self.build_temp):
             remove_tree(self.build_temp, dry_run=self.dry_run)
-        generated_folders = ('bin', 'dist', 'python/taichi/assets',
-                             'python/taichi/_lib/runtime',
-                             'python/taichi.egg-info')
+        generated_folders = (
+            "bin",
+            "dist",
+            "python/taichi/assets",
+            "python/taichi/_lib/runtime",
+            "python/taichi/_lib/c_api",
+            "taichi.egg-info",
+            "python/taichi.egg-info",
+            "build",
+        )
         for d in generated_folders:
             if os.path.exists(d):
                 remove_tree(d, dry_run=self.dry_run)
-        generated_files = [
-            'taichi/common/commit_hash.h', 'taichi/common/version.h'
-        ]
-        generated_files += glob.glob('taichi/runtime/llvm/runtime_*.bc')
-        generated_files += glob.glob('python/taichi/_lib/core/*.so')
-        generated_files += glob.glob('python/taichi/_lib/core/*.pyd')
+        generated_files = ["taichi/common/commit_hash.h", "taichi/common/version.h"]
+        generated_files += glob.glob("taichi/runtime/llvm/runtime_*.bc")
+        generated_files += glob.glob("python/taichi/_lib/core/*.so")
+        generated_files += glob.glob("python/taichi/_lib/core/*.pyd")
         for f in generated_files:
             if os.path.exists(f):
-                print(f'removing generated file {f}')
+                print(f"removing generated file {f}")
                 if not self.dry_run:
                     os.remove(f)
 
 
-setup(name=project_name,
-      packages=packages,
-      package_dir={"": package_dir},
-      version=version,
-      description='The Taichi Programming Language',
-      author='Taichi developers',
-      author_email='yuanmhu@gmail.com',
-      url='https://github.com/taichi-dev/taichi',
-      python_requires=">=3.6,<3.11",
-      install_requires=[
-          'numpy', 'sourceinspect>=0.0.4', 'colorama', 'astor',
-          'astunparse;python_version<"3.9"'
-      ],
-      data_files=[(os.path.join('_lib', 'runtime'), data_files)],
-      keywords=['graphics', 'simulation'],
-      license='MIT',
-      include_package_data=True,
-      entry_points={
-          'console_scripts': [
-              'ti=taichi._main:main',
-          ],
-      },
-      classifiers=classifiers,
-      ext_modules=[CMakeExtension('taichi_core')],
-      cmdclass=dict(egg_info=EggInfo,
-                    build_py=BuildPy,
-                    build_ext=CMakeBuild,
-                    clean=Clean),
-      has_ext_modules=lambda: True)
+def get_cmake_args():
+    import shlex
+
+    num_threads = os.getenv("BUILD_NUM_THREADS", multiprocessing.cpu_count())
+    cmake_args = shlex.split(os.getenv("TAICHI_CMAKE_ARGS", "").strip())
+
+    use_msbuild = False
+    use_xcode = False
+
+    if os.getenv("DEBUG", "0") in ("1", "ON"):
+        cfg = "Debug"
+    elif os.getenv("RELWITHDEBINFO", "0") in ("1", "ON"):
+        cfg = "RelWithDebInfo"
+    elif os.getenv("MINSIZEREL", "0") in ("1", "ON"):
+        cfg = "MinSizeRel"
+    else:
+        cfg = None
+    build_options = []
+    if cfg:
+        build_options.extend(["--build-type", cfg])
+    if sys.platform == "win32":
+        if os.getenv("TAICHI_USE_MSBUILD", "0") in ("1", "ON"):
+            use_msbuild = True
+        if use_msbuild:
+            build_options.extend(["-G", "Visual Studio 17 2022"])
+        else:
+            build_options.extend(["-G", "Ninja", "--skip-generator-test"])
+    if sys.platform == "darwin":
+        if os.getenv("TAICHI_USE_XCODE", "0") in ("1", "ON"):
+            use_xcode = True
+        if use_xcode:
+            build_options.extend(["-G", "Xcode", "--skip-generator-test"])
+    sys.argv[2:2] = build_options
+
+    cmake_args += [
+        f"-DTI_VERSION_MAJOR={TI_VERSION_MAJOR}",
+        f"-DTI_VERSION_MINOR={TI_VERSION_MINOR}",
+        f"-DTI_VERSION_PATCH={TI_VERSION_PATCH}",
+    ]
+
+    if sys.platform == "darwin" and use_xcode:
+        os.environ["SKBUILD_BUILD_OPTIONS"] = f"-jobs {num_threads}"
+    elif sys.platform != "win32":
+        os.environ["SKBUILD_BUILD_OPTIONS"] = f"-j{num_threads}"
+    elif use_msbuild:
+        # /M uses multi-threaded build (similar to -j)
+        os.environ["SKBUILD_BUILD_OPTIONS"] = f"/M"
+    if sys.platform == "darwin":
+        if platform.machine() == "arm64":
+            cmake_args += ["-DCMAKE_OSX_ARCHITECTURES=arm64"]
+        else:
+            cmake_args += ["-DCMAKE_OSX_ARCHITECTURES=x86_64"]
+    return cmake_args
+
+
+# Control files to be included in package data
+BLACKLISTED_FILES = [
+    "libSPIRV-Tools-shared.so",
+    "libSPIRV-Tools-shared.dll",
+]
+
+WHITELISTED_FILES = [
+    "libMoltenVK.dylib",
+]
+
+
+def cmake_install_manifest_filter(manifest_files):
+    def should_include(f):
+        basename = os.path.basename(f)
+        if basename in WHITELISTED_FILES:
+            return True
+        if basename in BLACKLISTED_FILES:
+            return False
+        return f.endswith((".so", "pyd", ".dll", ".bc", ".h", ".dylib", ".cmake", ".hpp", ".lib"))
+
+    return [f for f in manifest_files if should_include(f)]
+
+
+def sign_development_for_apple_m1():
+    """
+    Apple enforces codesigning for arm64 targets even for local development
+    builds. See discussion here:
+        https://github.com/supercollider/supercollider/issues/5603
+    """
+    if sys.platform == "darwin" and platform.machine() == "arm64":
+        try:
+            for path in glob.glob("python/taichi/_lib/core/*.so"):
+                print(f"signing {path}..")
+                subprocess.check_call(["codesign", "--force", "--deep", "--sign", "-", path])
+            for path in glob.glob("python/taichi/_lib/c_api/lib/*.so"):
+                print(f"signing {path}..")
+                subprocess.check_call(["codesign", "--force", "--deep", "--sign", "-", path])
+        except:
+            print("cannot sign python shared library for macos arm64 build")
+
+
+copy_assets()
+
+force_plat_name = os.getenv("TAICHI_FORCE_PLAT_NAME", "").strip()
+if force_plat_name:
+    from skbuild.constants import set_skbuild_plat_name
+
+    set_skbuild_plat_name(force_plat_name)
+
+setup(
+    name=project_name,
+    packages=packages,
+    package_dir={"": package_dir},
+    version=version,
+    description="The Taichi Programming Language",
+    author="Taichi developers",
+    author_email="yuanmhu@gmail.com",
+    url="https://github.com/taichi-dev/taichi",
+    python_requires=">=3.6,<4.0",
+    install_requires=[
+        "numpy",
+        "colorama",
+        "dill",
+        "rich",
+        'astunparse;python_version<"3.9"',
+    ],
+    data_files=[
+        (os.path.join("_lib", "runtime"), data_files),
+    ],
+    keywords=["graphics", "simulation"],
+    license="Apache Software License (http://www.apache.org/licenses/LICENSE-2.0)",
+    include_package_data=True,
+    entry_points={
+        "console_scripts": [
+            "ti=taichi._main:main",
+        ],
+    },
+    classifiers=classifiers,
+    cmake_args=get_cmake_args(),
+    cmake_process_manifest_hook=cmake_install_manifest_filter,
+    cmdclass={"egg_info": EggInfo, "clean": Clean},
+    has_ext_modules=lambda: True,
+)
+
+sign_development_for_apple_m1()

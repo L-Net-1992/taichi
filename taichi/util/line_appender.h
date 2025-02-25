@@ -5,7 +5,7 @@
 #include "spdlog/spdlog.h"
 #include "taichi/common/core.h"
 
-TI_NAMESPACE_BEGIN
+namespace taichi {
 
 class LineAppender {
  public:
@@ -23,7 +23,7 @@ class LineAppender {
   }
 
   template <typename... Args>
-  void append(std::string f, Args &&... args) {
+  void append(std::string f, Args &&...args) {
     lines_ += indent_ + fmt::format(f, std::forward<Args>(args)...) + '\n';
   }
 
@@ -74,4 +74,4 @@ class ScopedIndent {
   LineAppender &la_;
 };
 
-TI_NAMESPACE_END
+}  // namespace taichi

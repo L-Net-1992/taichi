@@ -4,12 +4,15 @@ import taichi as ti
 from tests import test_utils
 
 
-@pytest.mark.parametrize("a,b", [
-    (10, 3),
-    (-10, 3),
-    (10, -3),
-    (-10, -3),
-])
+@pytest.mark.parametrize(
+    "a,b",
+    [
+        (10, 3),
+        (-10, 3),
+        (10, -3),
+        (-10, -3),
+    ],
+)
 @test_utils.test()
 def test_py_style_mod(a, b):
     z = ti.field(ti.i32, shape=())
@@ -22,12 +25,15 @@ def test_py_style_mod(a, b):
     assert z[None] == a % b
 
 
-@pytest.mark.parametrize("a,b", [
-    (10, 3),
-    (-10, 3),
-    (10, -3),
-    (-10, -3),
-])
+@pytest.mark.parametrize(
+    "a,b",
+    [
+        (10, 3),
+        (-10, 3),
+        (10, -3),
+        (-10, -3),
+    ],
+)
 @test_utils.test()
 def test_c_style_mod(a, b):
     z = ti.field(ti.i32, shape=())
@@ -60,3 +66,22 @@ def test_mod_scan():
                 func(i, j)
                 assert z[None] == i % j
                 assert w[None] == _c_mod(i, j)
+
+
+@test_utils.test()
+def test_py_style_float_const_mod_one():
+    @ti.kernel
+    def func() -> ti.f32:
+        a = 0.5
+        return a % 1
+
+    assert func() == 0.5
+
+
+@test_utils.test()
+def test_py_style_unsigned_mod():
+    @ti.kernel
+    def func() -> ti.u32:
+        return ti.u32(3583196299) % ti.u32(524288)
+
+    assert func() == 212107

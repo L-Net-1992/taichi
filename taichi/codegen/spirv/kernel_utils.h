@@ -6,10 +6,10 @@
 
 #include "taichi/ir/offloaded_task_type.h"
 #include "taichi/ir/type.h"
-#include "taichi/backends/device.h"
+#include "taichi/ir/transforms.h"
+#include "taichi/rhi/device.h"
 
-namespace taichi {
-namespace lang {
+namespace taichi::lang {
 
 class Kernel;
 class SNode;
@@ -20,18 +20,31 @@ namespace spirv {
  * Per offloaded task attributes.
  */
 struct TaskAttributes {
-  enum class BufferType { Root, GlobalTmps, Args, Rets, ListGen, ExtArr };
+  enum class BufferType {
+    Root,
+    GlobalTmps,
+    Args,
+    Rets,
+    ListGen,
+    ExtArr,
+    ArgPack
+  };
 
   struct BufferInfo {
     BufferType type;
-    int root_id{-1};  // only used if type==Root or type==ExtArr
+    std::vector<int> root_id{-1};  // only used if type==Root or type==ExtArr
 
     BufferInfo() = default;
 
+    // NOLINTNEXTLINE(google-explicit-constructor)
     BufferInfo(BufferType buffer_type) : type(buffer_type) {
     }
 
     BufferInfo(BufferType buffer_type, int root_buffer_id)
+        : type(buffer_type), root_id({root_buffer_id}) {
+    }
+
+    BufferInfo(BufferType buffer_type, const std::vector<int> &root_buffer_id)
         : type(buffer_type), root_id(root_buffer_id) {
     }
 
@@ -54,7 +67,10 @@ struct TaskAttributes {
       using std::size_t;
       using std::string;
 
-      return hash<BufferType>()(buf.type) ^ buf.root_id;
+      size_t hash_result = hash<BufferType>()(buf.type);
+      for (const int &element : buf.root_id)
+        hash_result ^= element;
+      return hash_result;
     }
   };
 
@@ -65,6 +81,14 @@ struct TaskAttributes {
     std::string debug_string() const;
 
     TI_IO_DEF(buffer, binding);
+  };
+
+  struct TextureBind {
+    std::vector<int> arg_id;
+    int binding{0};
+    bool is_storage{false};
+
+    TI_IO_DEF(arg_id, binding, is_storage);
   };
 
   std::string name;
@@ -78,7 +102,7 @@ struct TaskAttributes {
   OffloadedTaskType task_type;
 
   struct RangeForAttributes {
-    // |begin| has differen meanings depending on |const_begin|:
+    // |begin| has different meanings depending on |const_begin|:
     // * true : It is the left boundary of the loop known at compile time.
     // * false: It is the offset of the begin in the global tmps buffer.
     //
@@ -95,6 +119,7 @@ struct TaskAttributes {
     TI_IO_DEF(begin, end, const_begin, const_end);
   };
   std::vector<BufferBind> buffer_binds;
+  std::vector<TextureBind> texture_binds;
   // Only valid when |task_type| is range_for.
   std::optional<RangeForAttributes> range_for_attribs;
 
@@ -107,6 +132,7 @@ struct TaskAttributes {
             advisory_num_threads_per_group,
             task_type,
             buffer_binds,
+            texture_binds,
             range_for_attribs);
 };
 
@@ -132,35 +158,77 @@ class KernelContextAttributes {
    * Attributes that are shared by the input arg and the return value.
    */
   struct AttribsBase {
+    std::string name;
     // For scalar arg, this is max(stride(dt), 4)
     // For array arg, this is #elements * max(stride(dt), 4)
     // Unit: byte
     size_t stride{0};
     // Offset in the context buffer
     size_t offset_in_mem{0};
-    // Index of the input arg or the return value in the host `Context`
-    int index{-1};
-    DataType dt;
+    PrimitiveTypeID dtype{PrimitiveTypeID::unknown};
     bool is_array{false};
     std::vector<int> element_shape;
     std::size_t field_dim{0};
+    // Only used with textures. Sampled textures always have unknown format;
+    // while RW textures always have a valid format.
+    BufferFormat format{BufferFormat::unknown};
+    ParameterType ptype{ParameterType::kUnknown};
 
-    TI_IO_DEF(stride, offset_in_mem, index, is_array, element_shape, field_dim);
+    TI_IO_DEF(name,
+              stride,
+              offset_in_mem,
+              dtype,
+              is_array,
+              element_shape,
+              field_dim,
+              format,
+              ptype);
   };
 
  public:
   /**
    * This is mostly the same as Kernel::Arg, with device specific attributes.
    */
-  struct ArgAttributes : public AttribsBase {};
+  struct ArgAttributes : public AttribsBase {
+    // Indices of the arg value in the host `Context`.
+    std::vector<int> indices;
+    bool is_argpack{false};
+
+    TI_IO_DEF(name,
+              stride,
+              offset_in_mem,
+              indices,
+              dtype,
+              is_array,
+              is_argpack,
+              element_shape,
+              field_dim,
+              format,
+              ptype);
+  };
 
   /**
    * This is mostly the same as Kernel::Ret, with device specific attributes.
    */
-  struct RetAttributes : public AttribsBase {};
+  struct RetAttributes : public AttribsBase {
+    // Index of the return value in the host `Context`.
+    int index{-1};
+
+    TI_IO_DEF(name,
+              stride,
+              offset_in_mem,
+              index,
+              dtype,
+              is_array,
+              element_shape,
+              field_dim,
+              format,
+              ptype);
+  };
 
   KernelContextAttributes() = default;
-  explicit KernelContextAttributes(const Kernel &kernel);
+  explicit KernelContextAttributes(const Kernel &kernel,
+                                   const DeviceCapabilityConfig *caps);
 
   /**
    * Whether this kernel has any argument
@@ -169,8 +237,21 @@ class KernelContextAttributes {
     return !arg_attribs_vec_.empty();
   }
 
-  inline const std::vector<ArgAttributes> &args() const {
+  inline const std::vector<std::pair<std::vector<int>, ArgAttributes>> &args()
+      const {
     return arg_attribs_vec_;
+  }
+
+  inline const ArgAttributes &arg_at(const std::vector<int> &indices) const {
+    for (const auto &element : arg_attribs_vec_) {
+      if (element.first == indices) {
+        return element.second;
+      }
+    }
+    TI_ERROR(fmt::format(
+        "Unexpected error: ArgAttributes with indices ({}) not found.",
+        fmt::join(indices, ", ")));
+    return arg_attribs_vec_[0].second;
   }
 
   /**
@@ -206,35 +287,62 @@ class KernelContextAttributes {
   }
 
   /**
-   * Number of bytes needed by the extra arguments.
-   *
-   * Extra argument region is used to store some metadata, like the shape of the
-   * external array.
+   * The type of the struct that contains all the arguments.
    */
-  inline size_t extra_args_bytes() const {
-    return extra_args_bytes_;
+  inline const lang::StructType *args_type() const {
+    return args_type_;
   }
 
   /**
-   * Offset (in bytes) of the extra arguments in the memory.
+   * The type of the struct that contains all the return values.
    */
-  inline size_t extra_args_mem_offset() const {
-    return args_bytes();
+  inline const lang::StructType *rets_type() const {
+    return rets_type_;
   }
+
+  /**
+   * Get the type of argpack by arg_id.
+   */
+  inline const lang::Type *argpack_type(const std::vector<int> &arg_id) const {
+    for (const auto &element : argpack_types_) {
+      if (element.first == arg_id) {
+        return element.second;
+      }
+    }
+    return nullptr;
+  }
+
+  /**
+   * Get all argpacks.
+   */
+  inline const std::vector<std::pair<std::vector<int>, const Type *>> &
+  argpack_types() const {
+    return argpack_types_;
+  }
+
+  std::vector<std::pair<std::vector<int>, irpass::ExternalPtrAccess>>
+      arr_access;
 
   TI_IO_DEF(arg_attribs_vec_,
             ret_attribs_vec_,
             args_bytes_,
             rets_bytes_,
-            extra_args_bytes_);
+            arr_access,
+            args_type_,
+            rets_type_,
+            argpack_types_);
 
  private:
-  std::vector<ArgAttributes> arg_attribs_vec_;
+  std::vector<std::pair<std::vector<int>, ArgAttributes>> arg_attribs_vec_;
   std::vector<RetAttributes> ret_attribs_vec_;
 
   size_t args_bytes_{0};
   size_t rets_bytes_{0};
-  size_t extra_args_bytes_{0};
+
+  const lang::StructType *args_type_{nullptr};
+  const lang::StructType *rets_type_{nullptr};
+
+  std::vector<std::pair<std::vector<int>, const Type *>> argpack_types_;
 };
 
 /**
@@ -254,5 +362,4 @@ struct TaichiKernelAttributes {
 };
 
 }  // namespace spirv
-}  // namespace lang
-}  // namespace taichi
+}  // namespace taichi::lang

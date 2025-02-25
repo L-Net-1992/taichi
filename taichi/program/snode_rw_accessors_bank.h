@@ -5,8 +5,7 @@
 #include "taichi/program/kernel.h"
 #include "taichi/ir/snode.h"
 
-namespace taichi {
-namespace lang {
+namespace taichi::lang {
 
 class Program;
 
@@ -36,6 +35,7 @@ class SNodeRwAccessorsBank {
 
     // for int32 and int64
     void write_int(const std::vector<int> &I, int64 val);
+    void write_uint(const std::vector<int> &I, uint64 val);
     int64 read_int(const std::vector<int> &I);
     uint64 read_uint(const std::vector<int> &I);
 
@@ -51,10 +51,14 @@ class SNodeRwAccessorsBank {
 
   Accessors get(SNode *snode);
 
+  void remove_cached_kernels(const SNode *snode) {
+    if (snode_to_kernels_.find(snode) != snode_to_kernels_.end())
+      snode_to_kernels_.erase(snode);
+  }
+
  private:
   Program *const program_;
   std::unordered_map<const SNode *, RwKernels> snode_to_kernels_;
 };
 
-}  // namespace lang
-}  // namespace taichi
+}  // namespace taichi::lang

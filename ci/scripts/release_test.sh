@@ -80,6 +80,11 @@ function taichi::utils::pause {
     read -p "Press enter to continue"
 }
 
+function taichi::utils::pkill {
+    sleep 5
+    pkill -f "$1"
+}
+
 function taichi::test::ggui {
     local WORKDIR=${1}
     local PATTERN="*_ggui.py"
@@ -89,16 +94,17 @@ function taichi::test::ggui {
     # divider
     taichi::utils::line
     taichi::utils::logger::info "Running GGUI examples"
-    
+
     # clone the repo
     taichi::utils::git_clone "${ORG}" "${REPO}"
     cd "${REPO}/python/taichi/examples/ggui_examples"
 
     # run tests
     for match in $(find ./ -name "${PATTERN}"); do
-        python "${match}"
+        python "${match}" &
+        taichi::utils::pkill "${match}"
         taichi::utils::line
-        taichi::utils::pause
+        # taichi::utils::pause
     done
 
     # go back to workdir
@@ -114,16 +120,17 @@ function taichi::test::difftaichi {
     # divider
     taichi::utils::line
     taichi::utils::logger::info "Running DiffTaichi examples"
-    
+
     # clone the repo
     taichi::utils::git_clone "${ORG}" "${REPO}"
     cd "${REPO}/examples"
 
     # run tests
     for match in $(find ./ -name "${PATTERN}"); do
-        python "${match}"
+        python "${match}" &
+        taichi::utils::pkill "${match}"
         taichi::utils::line
-        taichi::utils::pause
+        # taichi::utils::pause
     done
 
     # go back to workdir
@@ -139,7 +146,7 @@ function taichi::test::taichi_elements {
     # divider
     taichi::utils::line
     taichi::utils::logger::info "Running Taichi Elements examples"
-    
+
     # clone the repo
     taichi::utils::git_clone "${ORG}" "${REPO}"
     cd "${REPO}"
@@ -147,12 +154,14 @@ function taichi::test::taichi_elements {
     # install dependencies
     python "download_ply.py"
 
+
     # run tests
-    cd "${REPO}/demo" 
+    cd "${REPO}/demo"
     for match in $(find ./ -name "${PATTERN}"); do
-        python "${match}"
+        python "${match}" &
+        taichi::utils::pkill "${match}"
         taichi::utils::line
-        taichi::utils::pause
+        # taichi::utils::pause
     done
 
     # run special tests
@@ -179,13 +188,14 @@ function taichi::test::stannum {
     # divider
     taichi::utils::line
     taichi::utils::logger::info "Running Stannum examples"
-    
+
     # clone the repo
     taichi::utils::git_clone "${ORG}" "${REPO}"
     cd "${REPO}"
 
     # run tests
     pytest -v -s ./
+    taichi::utils::line
 
     # go back to workdir
     cd "${WORKDIR}"
@@ -199,7 +209,7 @@ function taichi::test::sandyfluid {
     # divider
     taichi::utils::line
     taichi::utils::logger::info "Running SandyFluid examples"
-    
+
     # clone the repo
     taichi::utils::git_clone "${ORG}" "${REPO}"
     cd "${REPO}"
@@ -210,8 +220,9 @@ function taichi::test::sandyfluid {
     pip install -r requirements.txt
 
     # run tests
-    python src/main.py
-
+    python src/main.py &
+    taichi::utils::pkill "src/main.py"
+    taichi::utils::line
     # go back to workdir
     cd "${WORKDIR}"
 }
@@ -224,13 +235,45 @@ function taichi::test::voxel_editor {
     # divider
     taichi::utils::line
     taichi::utils::logger::info "Running Voxel Editor examples"
-    
+
     # clone the repo
     taichi::utils::git_clone "${ORG}" "${REPO}"
     cd "${REPO}"
 
     # run tests
-    python voxel_editor.py
+    python voxel_editor.py &
+    taichi::utils::pkill "voxel_editor.py"
+    taichi::utils::line
+
+    # go back to workdir
+    cd "${WORKDIR}"
+}
+
+function taichi::test::generate_videos {
+    local WORKDIR=${1}
+    local PATTERN="test_*.py"
+    local ORG="taichi-dev"
+    local REPO="taichi"
+
+    # divider
+    taichi::utils::line
+    taichi::utils::logger::info "Generating examples videos"
+
+    # clone the repo
+    taichi::utils::git_clone "${ORG}" "${REPO}"
+    # mkdir "${REPO}/misc/output_videos"
+
+    # run tests
+    cd "${REPO}/tests/python/examples"
+    for directory in $(find ./ -mindepth 1 -maxdepth 1 -name "*" ! -name "__*" -type d); do
+        cd "${directory}"
+        for match in $(find ./ -maxdepth 1 -name "${PATTERN}" -type f); do
+            pytest -v "${match}"
+            taichi::utils::line
+            # taichi::utils::pause
+        done
+        cd ..
+    done
 
     # go back to workdir
     cd "${WORKDIR}"
@@ -252,7 +295,7 @@ function taichi::test::main {
 
     # ggui examples
     taichi::test::ggui "${WORKDIR}"
-    
+
     # difftaichi examples
     taichi::test::difftaichi "${WORKDIR}"
 
@@ -262,11 +305,14 @@ function taichi::test::main {
     # stannum tests
     taichi::test::stannum "${WORKDIR}"
 
-    # sandyfluid tests 
+    # sandyfluid tests
     taichi::test::sandyfluid "${WORKDIR}"
 
-    # voxel editor tests 
+    # voxel editor tests
     taichi::test::voxel_editor "${WORKDIR}"
+
+    # generating example videos
+    taichi::test::generate_videos "${WORKDIR}"
 }
 
 taichi::test::main

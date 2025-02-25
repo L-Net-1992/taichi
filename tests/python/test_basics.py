@@ -121,8 +121,19 @@ def test_while_global_load():
 
 @test_utils.test()
 def test_datatype_string():
-    for ty in [
-            ti.u8, ti.u16, ti.u32, ti.u64, ti.i8, ti.i16, ti.i32, ti.f32,
-            ti.f64
-    ]:
+    for ty in [ti.u8, ti.u16, ti.u32, ti.u64, ti.i8, ti.i16, ti.i32, ti.f32, ti.f64]:
         assert ty.to_string() == str(ty)
+
+
+@test_utils.test()
+def test_nested_for_with_atomic():
+    x = ti.field(dtype=ti.f32, shape=())
+
+    @ti.kernel
+    def nested_loops():
+        for i in range(2):
+            x[None] += 1
+            for j in range(1):
+                x[None] += 2
+
+    nested_loops()

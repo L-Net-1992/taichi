@@ -6,7 +6,7 @@
 
 #include <algorithm>
 
-TLANG_NAMESPACE_BEGIN
+namespace taichi::lang {
 
 namespace irpass {
 
@@ -24,13 +24,18 @@ void detect_read_only_in_task(OffloadedStmt *offload) {
 
 class ExternalPtrAccessVisitor : public BasicStmtVisitor {
  private:
-  std::unordered_map<int, ExternalPtrAccess> &map_;
+  std::unordered_map<std::vector<int>,
+                     ExternalPtrAccess,
+                     hashing::Hasher<std::vector<int>>> &map_;
 
  public:
   using BasicStmtVisitor::visit;
 
-  ExternalPtrAccessVisitor(std::unordered_map<int, ExternalPtrAccess> &map)
-      : BasicStmtVisitor(), map_(map) {
+  explicit ExternalPtrAccessVisitor(
+      std::unordered_map<std::vector<int>,
+                         ExternalPtrAccess,
+                         hashing::Hasher<std::vector<int>>> &map)
+      : map_(map) {
   }
 
   void visit(GlobalLoadStmt *stmt) override {
@@ -38,7 +43,7 @@ class ExternalPtrAccessVisitor : public BasicStmtVisitor {
       return;
 
     ExternalPtrStmt *src = stmt->src->cast<ExternalPtrStmt>();
-    ArgLoadStmt *arg = src->base_ptrs.data[0]->cast<ArgLoadStmt>();
+    ArgLoadStmt *arg = src->base_ptr->cast<ArgLoadStmt>();
     if (map_.find(arg->arg_id) != map_.end()) {
       map_[arg->arg_id] = map_[arg->arg_id] | ExternalPtrAccess::READ;
     } else {
@@ -51,7 +56,7 @@ class ExternalPtrAccessVisitor : public BasicStmtVisitor {
       return;
 
     ExternalPtrStmt *dst = stmt->dest->cast<ExternalPtrStmt>();
-    ArgLoadStmt *arg = dst->base_ptrs.data[0]->cast<ArgLoadStmt>();
+    ArgLoadStmt *arg = dst->base_ptr->cast<ArgLoadStmt>();
     if (map_.find(arg->arg_id) != map_.end()) {
       map_[arg->arg_id] = map_[arg->arg_id] | ExternalPtrAccess::WRITE;
     } else {
@@ -65,7 +70,7 @@ class ExternalPtrAccessVisitor : public BasicStmtVisitor {
 
     // Atomics modifies existing state (therefore both read & write)
     ExternalPtrStmt *dst = stmt->dest->cast<ExternalPtrStmt>();
-    ArgLoadStmt *arg = dst->base_ptrs.data[0]->cast<ArgLoadStmt>();
+    ArgLoadStmt *arg = dst->base_ptr->cast<ArgLoadStmt>();
     map_[arg->arg_id] = ExternalPtrAccess::WRITE | ExternalPtrAccess::READ;
   }
 };
@@ -82,9 +87,13 @@ void detect_read_only(IRNode *root) {
   }
 }
 
-std::unordered_map<int, ExternalPtrAccess> detect_external_ptr_access_in_task(
-    OffloadedStmt *offload) {
-  std::unordered_map<int, ExternalPtrAccess> map;
+std::unordered_map<std::vector<int>,
+                   ExternalPtrAccess,
+                   hashing::Hasher<std::vector<int>>>
+detect_external_ptr_access_in_task(OffloadedStmt *offload) {
+  std::unordered_map<std::vector<int>, ExternalPtrAccess,
+                     hashing::Hasher<std::vector<int>>>
+      map;
   ExternalPtrAccessVisitor v(map);
   offload->accept(&v);
   return map;
@@ -92,4 +101,4 @@ std::unordered_map<int, ExternalPtrAccess> detect_external_ptr_access_in_task(
 
 }  // namespace irpass
 
-TLANG_NAMESPACE_END
+}  // namespace taichi::lang

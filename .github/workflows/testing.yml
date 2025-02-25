@@ -3,13 +3,41 @@ on:
   pull_request:
     types: [opened, synchronize, reopened]
   push:
-    branches: [master]
+    branches:
+      - master
+      - rc-*
+  schedule:
+    - cron: '0 18 * * *'  # For testing the offline cache, GMT 18 == GMT+8 02
 
 concurrency:
   group: ${{ github.event.number || github.run_id }}
   cancel-in-progress: true
 
+env:
+  TI_CI: "1"
+  TI_SKIP_VERSION_CHECK: 'ON'
+  TI_LITE_TEST: ${{ github.event_name == 'pull_request' && ! contains(github.event.pull_request.labels.*.name, 'full-ci') && ! startsWith(github.base_ref, 'rc-') && '1' || '' }}
+  TI_TEST_OFFLINE_CACHE: ${{ github.event.schedule == '0 18 * * *' && '1' || '' }}
+  CI_IMAGE_VERSION: '202311231829'
+  # TI_USE_GIT_CACHE: ${{ vars.TI_USE_GIT_CACHE }}
+  TI_USE_GIT_CACHE: '1'  # variables are also not populated on forked PRs
+  GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
 jobs:
+  show_environ:
+    name: Show Environment Variables
+    # Disable this workflow on forks
+    if: github.repository_owner == 'taichi-dev'
+    runs-on: [self-hosted, Linux]
+    steps:
+    - name: Environment Variables
+      run: env
+    - name: Github Object
+      run: |
+        cat <<'EOF'
+        ${{ toJson(github) }}
+        EOF
+
   check_files:
     name: Check files
     # Disable this workflow on forks
@@ -19,9 +47,9 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout code
-        uses: actions/checkout@v2
+        uses: actions/checkout@v3
         with:
-          fetch-depth: 2
+          fetch-depth: '0'
 
       - name: check modified files
         id: check_files
@@ -52,80 +80,20 @@ jobs:
           done
 
           if ${run_job}; then
-            echo "::set-output name=run_job::true"
+            echo "run_job=true"  >> $GITHUB_OUTPUT
           else
-            echo "::set-output name=run_job::false"
+            echo "run_job=false" >> $GITHUB_OUTPUT
           fi
-
-  check_code_format:
-    name: Check Code Format
-    runs-on: ubuntu-latest
-    needs: check_files
-    # This job will be required to pass before merging to master branch.
-    steps:
-      - uses: actions/checkout@v2
-      - name: Set up Python ${{ matrix.python-version }}
-        uses: actions/setup-python@v2
-        with:
-          python-version: 3.9
-
-      - name: Setup git & clang-format
-        run: |
-          git config user.email "taichigardener@gmail.com"
-          git config user.name "Taichi Gardener"
-          git checkout -b _fake_squash
-          git remote add upstream https://github.com/taichi-dev/taichi.git
-          git fetch upstream master
-          sudo apt install clang-format-10
-
-      - name: Cache PIP
-        uses: actions/cache@v2
-        with:
-          path: ~/.cache/pip
-          key: ${{ hashFiles('setup.py') }}-${{ hashFiles('requirements_dev.txt') }}
-
-      - name: Install requirements
-        run: |
-          python3 -m pip install --user -r requirements_dev.txt
-
-      - name: Check code format
-        run: |
-          python3 misc/code_format.py
-          git checkout -b _enforced_format
-          git commit -am "enforce code format" || true
-          # exit with 1 if there were differences:
-          git diff _fake_squash _enforced_format --exit-code
 
   check_static_analyzer:
     name: Check Static Analyzer
     runs-on: ubuntu-latest
     needs: check_files
     steps:
-      - uses: actions/checkout@v2
+      - uses: actions/checkout@v3
         with:
-          submodules: "recursive"
-
-      - name: Set up Python ${{ matrix.python-version }}
-        uses: actions/setup-python@v2
-        with:
-          python-version: 3.9
-
-      - name: Pylint
-        run: |
-          if [[ ${{needs.check_files.outputs.run_job}} == false ]]; then
-            exit 0
-          fi
-          python3 -m pip install --user pylint
-          # Make sure pylint doesn't regress
-          pylint python/taichi/ --disable=all --enable=$(python scripts/generate_pylint_tags.py)
-          if [ $? -eq 0 ]
-          then
-            echo "PASSED: pylint is happy"
-            exit 0
-          else
-            echo "FAILED: please run the pylint command above and make sure it passes"
-            exit 1
-          fi
+          submodules: 'recursive'
+          fetch-depth: '0'
 
       - name: clang-tidy
         run: |
@@ -134,300 +102,328 @@ jobs:
           fi
           # https://docs.github.com/en/packages/managing-github-packages-using-github-actions-workflows/publishing-and-installing-a-package-with-github-actions#upgrading-a-workflow-that-accesses-ghcrio
           echo $CR_PAT | docker login ghcr.io -u ${{ github.actor }} --password-stdin
-          docker pull ghcr.io/taichi-dev/taichidev-cpu-ubuntu18.04:v0.2.2
-          docker run -id --user dev --name check_clang_tidy ghcr.io/taichi-dev/taichidev-cpu-ubuntu18.04:v0.2.2 /bin/bash
+          docker pull ghcr.io/taichi-dev/taichidev-cpu-ubuntu18.04:v0.3.3
+          docker run -id --user dev --name check_clang_tidy ghcr.io/taichi-dev/taichidev-cpu-ubuntu18.04:v0.3.3 /bin/bash
           tar -cf - ../${{ github.event.repository.name }} --mode u=+rwx,g=+rwx,o=+rwx --owner 1000 --group 1000 | docker cp - check_clang_tidy:/home/dev/
-          docker exec --user root check_clang_tidy apt install -y clang-tidy-10
+          docker exec --user root check_clang_tidy apt-get update
+          docker exec --user root check_clang_tidy apt install -y clang-tidy-10 libx11-dev libxrandr-dev libxinerama-dev libxcursor-dev libxi-dev zlib1g-dev libglew-dev libglfw3-dev
           docker exec --user dev check_clang_tidy /home/dev/taichi/.github/workflows/scripts/check_clang_tidy.sh "$CI_SETUP_CMAKE_ARGS"
         env:
           CR_PAT: ${{ secrets.GITHUB_TOKEN }}
-          CI_SETUP_CMAKE_ARGS: -DCMAKE_EXPORT_COMPILE_COMMANDS=ON -DTI_WITH_OPENGL:BOOL=OFF -DTI_WITH_CC:BOOL=ON -DTI_WITH_VULKAN:BOOL=OFF -DTI_BUILD_TESTS:BOOL=OFF
+          CI_SETUP_CMAKE_ARGS: -DCMAKE_EXPORT_COMPILE_COMMANDS=ON -DTI_WITH_OPENGL:BOOL=ON -DTI_WITH_VULKAN:BOOL=ON -DTI_BUILD_TESTS:BOOL=ON -DTI_WITH_BACKTRACE:BOOL=ON
 
-  build_and_test_cpu_linux:
-    name: Build and Test linux (CPU)
-    needs: [check_code_format, check_files]
-    timeout-minutes: 60
-    strategy:
-      matrix:
-        include:
-          - os: ubuntu-latest
-            python: py39
-            with_cc: ON
-            wanted_archs: "cpu,cc"
-          - os: ubuntu-latest
-            python: py310
-            with_cc: ON
-            wanted_archs: "cpu,cc"
-    runs-on: ${{ matrix.os }}
-    permissions:
-      packages: read
-      contents: read
-    steps:
-      - uses: actions/checkout@v2
-        with:
-          submodules: "recursive"
+  #build_and_test_cpu_mac:
+  #  name: Build and Test macos (CPU)
+  #  needs: check_files
+  #  timeout-minutes: ${{ github.event.schedule != '0 18 * * *' && 120 || 180 }}
+  #  strategy:
+  #    matrix:
+  #      include:
+  #        - os: macos-10.15
+  #          python: 3.11
+  #          with_cpp_tests: ON
+  #          wanted_archs: 'cpu,vulkan'
+  #  runs-on:
+  #  - self-hosted
+  #  - ${{ matrix.os }}
+  #  env:
+  #    PY: ${{ matrix.python }}
+  #    TAICHI_CMAKE_ARGS: >-
+  #      -DTI_WITH_OPENGL:BOOL=OFF
+  #      -DTI_WITH_VULKAN:BOOL=ON
+  #      -DTI_WITH_C_API=ON
+  #      -DTI_BUILD_TESTS:BOOL=${{ matrix.with_cpp_tests }}
+  #  steps:
+  #    - name: Workaround checkout issues
+  #      run: |
+  #        . .github/workflows/scripts/common-utils.sh
+  #        git submodule foreach 'git rev-parse HEAD > /dev/null 2>&1 || rm -rf $PWD' || true
+  #        unset-git-caching-proxy
 
-      - name: Get sccache cache
-        uses: actions/cache@v2
-        with:
-          path: sccache_cache
-          key: sccache-linux-${{matrix.with_cc}}-${{ github.sha }}
-          restore-keys: |
-            sccache-linux-${{matrix.with_cc}}-
+  #    - uses: actions/checkout@v3
+  #      with:
+  #        fetch-depth: '0'
+  #        submodules: 'recursive'
 
-      - name: Get docker images
-        run: |
-          if [[ ${{needs.check_files.outputs.run_job}} == false ]]; then
-            exit 0
-          fi
-          # https://docs.github.com/en/packages/managing-github-packages-using-github-actions-workflows/publishing-and-installing-a-package-with-github-actions#upgrading-a-workflow-that-accesses-ghcrio
-          echo $CR_PAT | docker login ghcr.io -u ${{ github.actor }} --password-stdin
-          docker pull ghcr.io/taichi-dev/taichidev-cpu-ubuntu18.04:v0.2.2
-        env:
-          CR_PAT: ${{ secrets.GITHUB_TOKEN }}
+  #    - name: Prepare Environment
+  #      run: |
+  #        . .github/workflows/scripts/common-utils.sh
+  #        prepare-build-cache
+  #      env:
+  #        PLATFORM: 'macos'
 
-      - name: Build
-        run: |
-          if [[ ${{needs.check_files.outputs.run_job}} == false ]]; then
-            exit 0
-          fi
-          mkdir -m777 shared
-          docker create --user dev --name taichi_build \
-            -e PY -e PROJECT_NAME -e TAICHI_CMAKE_ARGS \
-            ghcr.io/taichi-dev/taichidev-cpu-ubuntu18.04:v0.2.2 \
-            /home/dev/taichi/.github/workflows/scripts/unix_build.sh
-          # A tarball is needed because sccache needs some permissions that only the file owner has.
-          # 1000 is the uid and gid of user "dev" in the container.
-          # If the uid or gid of the user inside the docker changes, please change the uid and gid in the following line.
-          tar -cf - ../${{ github.event.repository.name }} --mode u=+rwx,g=+rwx,o=+rwx --owner 1000 --group 1000 | docker cp - taichi_build:/home/dev/
-          docker start -a taichi_build
-          rm -rf sccache_cache
-          docker cp taichi_build:/home/dev/taichi/sccache_cache sccache_cache
-          docker cp taichi_build:/home/dev/taichi/dist shared/dist
-          docker cp taichi_build:/home/dev/taichi/build shared/build
-        env:
-          PY: ${{ matrix.python }}
-          PROJECT_NAME: taichi
-          TAICHI_CMAKE_ARGS: -DTI_WITH_OPENGL:BOOL=OFF -DTI_WITH_CC:BOOL=${{ matrix.with_cc }} -DTI_WITH_VULKAN:BOOL=OFF -DTI_BUILD_TESTS:BOOL=ON -DCMAKE_C_COMPILER_LAUNCHER=sccache -DCMAKE_CXX_COMPILER_LAUNCHER=sccache
+  #    - name: Build & Install
+  #      if: needs.check_files.outputs.run_job == 'true'
+  #      run: |
+  #        # Use the molten-vk v1.1.10 downloaded from taichi assets
+  #        brew uninstall molten-vk -f
+  #        .github/workflows/scripts/build.py
+  #      env:
+  #        CXX: clang++
 
-      - name: Test
-        run: |
-          if [[ ${{needs.check_files.outputs.run_job}} == false ]]; then
-            exit 0
-          fi
-          docker create --user dev --name taichi_test -e PY -e TI_WANTED_ARCHS ghcr.io/taichi-dev/taichidev-cpu-ubuntu18.04:v0.2.2 /home/dev/unix_test.sh
-          docker cp .github/workflows/scripts/unix_test.sh taichi_test:/home/dev/unix_test.sh
-          docker cp shared/dist/ taichi_test:/home/dev/
-          docker cp shared/build/ taichi_test:/home/dev/
-          docker cp ./requirements_test.txt taichi_test:/home/dev/requirements_test.txt
-          docker cp tests/ taichi_test:/home/dev/
-          docker cp pyproject.toml taichi_test:/home/dev/
-          docker start -a taichi_test
-        env:
-          PY: ${{ matrix.python }}
-          TI_WANTED_ARCHS: ${{ matrix.wanted_archs }}
+  #    # [DEBUG] Copy this step around to enable debugging inside Github Action instances.
+  #    #- name: Setup tmate session
+  #    #  uses: mxschmitt/action-tmate@v3
+  #    #  with:
+  #    #    limit-access-to-actor: true
 
-      - name: clean docker container
-        if: always()
-        run: |
-          docker rm taichi_build taichi_test -f
+  #    - name: Test
+  #      id: test
+  #      if: needs.check_files.outputs.run_job == 'true'
+  #      run: .github/workflows/scripts/unix_test.sh
+  #      env:
+  #        TI_WANTED_ARCHS: ${{ matrix.wanted_archs }}
+  #        TI_SKIP_CPP_TESTS: Disabled because Vulkan is supported but not working on buildbot4
 
-  build_and_test_cpu_mac:
-    name: Build and Test macos (CPU)
-    needs: [check_code_format, check_files]
-    timeout-minutes: 60
-    strategy:
-      matrix:
-        include:
-          - os: macos-10.15
-            python: 3.7
-            with_cc: OFF
-            with_cpp_tests: ON
-            wanted_archs: "cpu"
-    runs-on: ${{ matrix.os }}
-    steps:
-      - uses: actions/checkout@v2
-        with:
-          submodules: "recursive"
-
-      - uses: actions/setup-python@v2
-        with:
-          python-version: ${{ matrix.python }}
-
-      - name: Get sccache cache
-        uses: actions/cache@v2
-        with:
-          path: sccache_cache
-          key: sccache-mac-${{ github.sha }}
-          restore-keys: |
-            sccache-mac-
-
-      - name: Download Pre-Built LLVM 10.0.0
-        run: |
-          if [[ ${{needs.check_files.outputs.run_job}} == false ]]; then
-            exit 0
-          fi
-          python misc/ci_download.py
-        env:
-          CI_PLATFORM: ${{ matrix.os }}
-
-      - name: Build & Install
-        run: |
-          brew install molten-vk
-          if [[ ${{needs.check_files.outputs.run_job}} == false ]]; then
-            exit 0
-          fi
-          mkdir -p sccache_cache
-          export PATH=`pwd`/taichi-llvm/bin/:$PATH
-          .github/workflows/scripts/unix_build.sh
-          brew uninstall molten-vk
-        env:
-          TAICHI_CMAKE_ARGS: -DTI_WITH_OPENGL:BOOL=OFF -DTI_WITH_CC:BOOL=${{ matrix.with_cc }} -DTI_WITH_VULKAN:BOOL=ON -DTI_BUILD_TESTS:BOOL=${{ matrix.with_cpp_tests }} -DCMAKE_C_COMPILER_LAUNCHER=sccache -DCMAKE_CXX_COMPILER_LAUNCHER=sccache
-          CXX: clang++
-      # [DEBUG] Copy this step around to enable debugging inside Github Action instances.
-      #- name: Setup tmate session
-      #  uses: mxschmitt/action-tmate@v3
-      #  with:
-      #    limit-access-to-actor: true
-
-      - name: Test
-        run: |
-          if [[ ${{needs.check_files.outputs.run_job}} == false ]]; then
-            exit 0
-          fi
-          .github/workflows/scripts/unix_test.sh
-        env:
-          TI_WANTED_ARCHS: ${{ matrix.wanted_archs }}
-          TI_CI: 1
+  #    - name: Save wheel if test failed
+  #      if: failure() && steps.test.conclusion == 'failure'
+  #      uses: actions/upload-artifact@v4
+  #      with:
+  #        name: broken-wheel
+  #        path: dist/*
+  #        retention-days: 7
 
   build_and_test_gpu_linux:
     name: Build and Test (GPU)
-    needs: [check_code_format, check_files]
-    runs-on: [self-hosted, cuda, vulkan, cn]
-    timeout-minutes: 60
-    steps:
-      - uses: actions/checkout@v2
-        with:
-          submodules: "recursive"
+    needs: check_files
+    timeout-minutes: ${{ github.event.schedule != '0 18 * * *' && 90 || 120 }}
+    strategy:
+      matrix:
+        extra_markers:
+        - sm70
+        - not sm70
+        driver:
+        - driver550
 
-      - name: Get sccache cache
-        uses: actions/cache@v2
+    runs-on:
+    - self-hosted
+    - cn
+    - cuda
+    - vulkan
+    - ${{ matrix.driver }}
+    - ${{ matrix.extra_markers == 'sm70' && 'sm70' || 'Linux' }}
+    env:
+      PY: '3.11'
+      PROJECT_NAME: taichi
+      TAICHI_CMAKE_ARGS: >-
+        -DTI_WITH_OPENGL:BOOL=ON
+        -DTI_WITH_VULKAN:BOOL=ON
+        -DTI_WITH_BACKTRACE:BOOL=ON
+        -DTI_BUILD_TESTS:BOOL=ON
+      TI_WANTED_ARCHS: 'cpu,cuda,vulkan,opengl,gles'
+      TI_DEVICE_MEMORY_GB: '1'
+      TI_RUN_RELEASE_TESTS: '1'
+
+    steps:
+      - name: Restart X Server
+        run: |
+          sudo systemctl restart xorg
+
+      - name: Workaround checkout Needed single revision issue
+        run: git submodule foreach 'git rev-parse HEAD > /dev/null 2>&1 || rm -rf $PWD' || true
+
+      - uses: actions/checkout@v3
         with:
-          path: sccache_cache
-          key: sccache-linux-gpu-${{ github.sha }}
-          restore-keys: |
-            sccache-linux-gpu-
+          submodules: 'recursive'
+          fetch-depth: '0'
+
+      - name: Prepare Environment
+        run: |
+          . .github/workflows/scripts/common-utils.sh
+          prepare-build-cache
+          echo CI_DOCKER_RUN_EXTRA_ARGS="-v $(pwd):/home/dev/taichi" >> $GITHUB_ENV
 
       - name: Build & Install
         run: |
-          if [[ ${{needs.check_files.outputs.run_job}} == false ]]; then
-            exit 0
-          fi
-          mkdir -m777 shared
-          docker create --user dev --name taichi_build --gpus all -v /tmp/.X11-unix:/tmp/.X11-unix \
-            -e PY -e GPU_BUILD -e PROJECT_NAME -e TAICHI_CMAKE_ARGS -e DISPLAY \
-            registry.taichigraphics.com/taichidev-ubuntu18.04:v0.2.1 \
-            /home/dev/taichi/.github/workflows/scripts/unix_build.sh
-          # A tarball is needed because sccache needs some permissions that only the file owner has.
-          # 1000 is the uid and gid of user "dev" in the container.
-          # If the uid or gid of the user inside the docker changes, please change the uid and gid in the following line.
-          tar -cf - ../${{ github.event.repository.name }} --mode u=+rwx,g=+rwx,o=+rwx --owner 1000 --group 1000 | docker cp - taichi_build:/home/dev/
-          docker start -a taichi_build
-          rm -rf sccache_cache
-          docker cp taichi_build:/home/dev/taichi/sccache_cache sccache_cache
-          docker cp taichi_build:/home/dev/taichi/dist shared/dist
-          docker cp taichi_build:/home/dev/taichi/build shared/build
-        env:
-          PY: py38
-          GPU_BUILD: ON
-          PROJECT_NAME: taichi
-          TAICHI_CMAKE_ARGS: -DTI_WITH_OPENGL:BOOL=ON -DTI_WITH_CC:BOOL=OFF -DTI_WITH_VULKAN:BOOL=ON -DTI_BUILD_TESTS:BOOL=ON -DCMAKE_C_COMPILER_LAUNCHER=sccache -DCMAKE_CXX_COMPILER_LAUNCHER=sccache
-          DISPLAY: :1
+          [[ ${{needs.check_files.outputs.run_job}} == false ]] && exit 0
+          . .github/workflows/scripts/common-utils.sh
+
+          ci-docker-run-gpu --name taichi-build \
+            registry.botmaster.tgr/taichi-build-cuda:${{ env.CI_IMAGE_VERSION }} \
+            /home/dev/taichi/.github/workflows/scripts/build.py
 
       - name: Test
+        id: test
         run: |
-          if [[ ${{needs.check_files.outputs.run_job}} == false ]]; then
-            exit 0
-          fi
-          docker create --user dev --name taichi_test --gpus all -v /tmp/.X11-unix:/tmp/.X11-unix \
-            -e DISPLAY -e PY -e GPU_TEST -e TI_WANTED_ARCHS \
-             registry.taichigraphics.com/taichidev-ubuntu18.04:v0.2.1 \
-             /home/dev/unix_test.sh
-          docker cp .github/workflows/scripts/unix_test.sh taichi_test:/home/dev/unix_test.sh
-          docker cp shared/dist/ taichi_test:/home/dev/
-          docker cp shared/build/ taichi_test:/home/dev/
-          docker cp pyproject.toml taichi_test:/home/dev/
-          docker cp tests/ taichi_test:/home/dev/
-          docker cp requirements_test.txt taichi_test:/home/dev/requirements_test.txt
-          docker start -a taichi_test
-        env:
-          PY: py38
-          GPU_TEST: ON
-          DISPLAY: :1
-          TI_WANTED_ARCHS: "cpu,cuda,vulkan,opengl"
-          TI_DEVICE_MEMORY_GB: '0.7'
+          [[ ${{needs.check_files.outputs.run_job}} == false ]] && exit 0
+          . .github/workflows/scripts/common-utils.sh
 
-      - name: clean docker container
-        if: always()
+          ci-docker-run-gpu --name taichi-test \
+             registry.botmaster.tgr/taichi-test-cuda:${{ env.CI_IMAGE_VERSION }} \
+             /home/dev/taichi/.github/workflows/scripts/unix_test.sh
+        env:
+          EXTRA_TEST_MARKERS: ${{ matrix.extra_markers }}
+
+      - name: Save wheel if test failed
+        if: failure() && steps.test.conclusion == 'failure'
+        uses: actions/upload-artifact@v4
+        with:
+          name: broken-wheel
+          path: dist/*
+          retention-days: 7
+
+      - name: Save Bad Captures
+        if: failure() && steps.test.conclusion == 'failure'
+        uses: actions/upload-artifact@v4
+        with:
+          name: bad-captures
+          path: taichi-release-tests/bad-compare/*
+          retention-days: 7
+
+  build_and_test_amdgpu_linux:
+    name: Build and Test (AMDGPU)
+    needs: check_files
+    timeout-minutes: ${{ github.event.schedule != '0 18 * * *' && 90 || 120 }}
+    runs-on: [self-hosted, amdgpu]
+    env:
+      PY: '3.8'
+      PROJECT_NAME: taichi
+      TI_WANTED_ARCHS: 'cpu,amdgpu'
+      TI_DEVICE_MEMORY_GB: '1'
+      TI_RUN_RELEASE_TESTS: '0'
+      TAICHI_CMAKE_ARGS: >-
+        -DTI_WITH_CUDA:BOOL=OFF
+        -DTI_WITH_VULKAN:BOOL=OFF
+        -DTI_WITH_OPENGL:BOOL=OFF
+        -DTI_BUILD_TESTS:BOOL=ON
+        -DTI_WITH_AMDGPU:BOOL=ON
+
+    steps:
+      - name: Workaround checkout Needed single revision issue
+        run: git submodule foreach 'git rev-parse HEAD > /dev/null 2>&1 || rm -rf $PWD' || true
+
+      - uses: actions/checkout@v3
+        with:
+          submodules: 'recursive'
+          fetch-depth: '0'
+
+      - name: Prepare Environment
         run: |
-          docker rm taichi_build taichi_test -f
+          . .github/workflows/scripts/common-utils.sh
+          prepare-build-cache
+          echo CI_DOCKER_RUN_EXTRA_ARGS="-v $(pwd):/home/dev/taichi" >> $GITHUB_ENV
+
+      - name: Build & Install
+        run: |
+          [[ ${{needs.check_files.outputs.run_job}} == false ]] && exit 0
+          . .github/workflows/scripts/common-utils.sh
+
+          ci-docker-run-amdgpu --name taichi-build \
+            registry.botmaster.tgr/taichi-build-amdgpu:${{ env.CI_IMAGE_VERSION }} \
+            /home/dev/taichi/.github/workflows/scripts/build.py
+
+      - name: Test
+        id: test
+        run: |
+          [[ ${{needs.check_files.outputs.run_job}} == false ]] && exit 0
+          . .github/workflows/scripts/common-utils.sh
+
+          ci-docker-run-amdgpu --name taichi-test \
+             registry.botmaster.tgr/taichi-test-amdgpu:${{ env.CI_IMAGE_VERSION }} \
+             /home/dev/taichi/.github/workflows/scripts/unix_test.sh
+
+      - name: Save wheel if test failed
+        if: failure() && steps.test.conclusion == 'failure'
+        uses: actions/upload-artifact@v4
+        with:
+          name: broken-wheel
+          path: dist/*
+          retention-days: 7
+
+      - name: Save Bad Captures
+        if: failure() && steps.test.conclusion == 'failure'
+        uses: actions/upload-artifact@v4
+        with:
+          name: bad-captures
+          path: taichi-release-tests/bad-compare/*
+          retention-days: 7
+
 
   build_and_test_windows:
     name: Build and Test Windows
-    needs: [check_code_format, check_files]
-    runs-on: [self-hosted, windows, gpu]
-    timeout-minutes: 90
+    needs: check_files
+    strategy:
+      matrix:
+        extra_markers:
+        - sm70
+        - not sm70
+    runs-on:
+    - self-hosted
+    - cn
+    - windows
+    - cuda
+    - OpenGL
+    - ${{ matrix.extra_markers == 'sm70' && 'sm70' || 'windows' }}
+    timeout-minutes: ${{ github.event.schedule != '0 18 * * *' && 90 || 180 }}
+    env:
+      PY: "3.7"
+      TAICHI_CMAKE_ARGS: >-
+        -DTI_WITH_OPENGL:BOOL=ON
+        -DTI_WITH_VULKAN:BOOL=ON
+        -DTI_WITH_DX11:BOOL=ON
+        -DTI_WITH_DX12:BOOL=ON
+        -DTI_BUILD_TESTS:BOOL=ON
+        -DTI_WITH_BACKTRACE=ON
+        -DTI_WITH_C_API=ON
+      TI_WANTED_ARCHS: cpu,cuda,vulkan,opengl,gles
+      TI_SKIP_VERSION_CHECK: ON
+      TI_DEVICE_MEMORY_GB: '1'
+      TI_RUN_RELEASE_TESTS: '1'
+
     steps:
-      # See also https://github.com/taichi-dev/taichi/issues/4161
-      - name: Cleanup
-        shell: powershell
+      - name: Workaround checkout issues
         run: |
-          remove-item '${{ github.workspace }}\*' -recurse -force
+          git config --system core.longpaths true
+          git submodule foreach 'git rev-parse HEAD > /dev/null 2>&1 || rm -rf $PWD'  # no '|| true' here
 
-      - uses: actions/checkout@v2
+      - uses: actions/checkout@v3
         with:
-          submodules: "recursive"
+          fetch-depth: '0'
+          submodules: 'recursive'
 
-      - uses: actions/setup-python@v2
+      - uses: actions/setup-python@v4
         with:
           python-version: 3.7
 
-      - name: Add Visual Studio Shell to ENV
-        uses: egor-tensin/vs-shell@v2
-        with:
-          arch: x64
-
-      - name: Get sccache cache
-        uses: actions/cache@v2
-        with:
-          path: ccache_cache
-          key: ccache-win64-${{ github.sha }}
-          restore-keys: |
-            ccache-win64-
-
       - name: Build
-        shell: powershell
         if: ${{ needs.check_files.outputs.run_job != 'false' }}
+        shell: cmd
         run: |
-          .\.github\workflows\scripts\win_build.ps1 -installVulkan -install -libsDir C:\
+          . .github/workflows/scripts/common-utils.ps1
+          SetGitCachingProxy
+          python .\.github\workflows\scripts\build.py
 
       - name: Test
-        shell: powershell
+        id: test
+        shell: pwsh
         if: ${{ needs.check_files.outputs.run_job != 'false' }}
         run: |
-          .\.github\workflows\scripts\win_test.ps1
+          . .github/workflows/scripts/common-utils.ps1
+          SetGitCachingProxy
+          .\.github\workflows\scripts\win_test.ps1 -libsDir "$env:LocalAppData/buildbot"
         env:
-          TI_WANTED_ARCHS: cpu,cuda,opengl
-          TAICHI_CMAKE_ARGS: -DTI_WITH_OPENGL:BOOL=ON -DTI_WITH_CC:BOOL=OFF
-          TI_SKIP_VERSION_CHECK: ON
-          TI_CI: 1
-          PYTHON: "3.7"
-          TI_DEVICE_MEMORY_GB: '0.7'
+          EXTRA_TEST_MARKERS: ${{ matrix.extra_markers }}
+
+      - name: Save wheel if test failed
+        if: failure() && steps.test.conclusion == 'failure'
+        uses: actions/upload-artifact@v4
+        with:
+          name: broken-wheel
+          path: dist/*
+          retention-days: 7
+
+      - name: Cleanup Git Cache Configs
+        shell: pwsh
+        if: always()
+        run: |
+          . .github/workflows/scripts/common-utils.ps1
+          UnsetGitCachingProxy
+          exit 0
 
   build_and_test_m1:
     name: Build and Test (Apple M1)
-    needs: [check_code_format, check_files]
-    timeout-minutes: 60
+    needs: check_files
+    timeout-minutes: ${{ github.event.schedule != '0 18 * * *' && 60 || 120 }}
     strategy:
       matrix:
         include:
@@ -436,43 +432,506 @@ jobs:
     defaults:
       run:
         # https://github.com/actions/runner/issues/805#issuecomment-844426478
-        shell: "/usr/bin/arch -arch arm64e /bin/bash --noprofile --norc -eo pipefail {0}"
+        shell: '/usr/bin/arch -arch arm64e /bin/bash --noprofile --norc -eo pipefail {0}'
     runs-on: [self-hosted, m1]
+    env:
+      CXX: clang++
+      PY: ${{ matrix.python }}
+      TAICHI_CMAKE_ARGS: >-
+        -DTI_WITH_OPENGL:BOOL=OFF
+        -DTI_WITH_CUDA:BOOL=OFF
+        -DTI_WITH_VULKAN:BOOL=ON
+        -DTI_BUILD_TESTS:BOOL=ON
+        -DTI_WITH_C_API=ON
+        -DTI_WITH_STATIC_C_API=ON
+      TI_WANTED_ARCHS: 'cpu,metal,vulkan'
+      PLATFORM: 'm1'
+      TI_RUN_RELEASE_TESTS: '1'
     steps:
-      - uses: actions/checkout@v2
-        with:
-          submodules: "recursive"
+      - name: Workaround checkout Needed single revision issue
+        run: git submodule foreach 'git rev-parse HEAD > /dev/null 2>&1 || rm -rf $PWD' || true
 
-      - name: Get sccache cache
-        uses: actions/cache@v2
+      - uses: actions/checkout@v3
         with:
-          path: sccache_cache
-          key: sccache-m1-${{ github.sha }}
-          restore-keys: |
-            sccache-m1-
+          fetch-depth: '0'
+          submodules: 'recursive'
 
       - name: Build
+        if: ${{ needs.check_files.outputs.run_job != 'false' }}
         run: |
-          if [[ ${{needs.check_files.outputs.run_job}} == false ]]; then
-            exit 0
-          fi
-          export PATH=/Users/github/miniforge3/envs/$PY/bin:$PATH
+          . .github/workflows/scripts/common-utils.sh
+          prepare-build-cache
           brew install molten-vk
-          .github/workflows/scripts/unix_build.sh
+          brew install llvm@15
+          .github/workflows/scripts/build.py
         env:
-          TAICHI_CMAKE_ARGS: -DTI_WITH_OPENGL:BOOL=OFF -DTI_WITH_CUDA:BOOL=OFF -DTI_WITH_CC:BOOL=OFF -DTI_WITH_VULKAN:BOOL=ON -DTI_BUILD_TESTS:BOOL=ON -DCMAKE_C_COMPILER_LAUNCHER=sccache -DCMAKE_CXX_COMPILER_LAUNCHER=sccache
-          PY: ${{ matrix.python }}
           CXX: clang++
 
-      - name: Test
+      - name: Check C-API Export Symbols
+        if: ${{ needs.check_files.outputs.run_job != 'false' }}
         run: |
-          if [[ ${{needs.check_files.outputs.run_job}} == false ]]; then
-            exit 0
-          fi
-          export PATH=/Users/github/miniforge3/envs/$PY/bin:$PATH
+          . .github/workflows/scripts/common-utils.sh
+
+          .github/workflows/scripts/aot-demo.sh check-c-api-export-symbols
+
+      - name: Test
+        id: test
+        if: ${{ needs.check_files.outputs.run_job != 'false' }}
+        run: |
           .github/workflows/scripts/unix_test.sh
+
+      - name: Save wheel if test failed
+        if: failure() && steps.test.conclusion == 'failure'
+        uses: actions/upload-artifact@v4
+        with:
+          name: broken-wheel
+          path: dist/*
+          retention-days: 7
+
+      - name: Save Bad Captures
+        if: failure() && steps.test.conclusion == 'failure'
+        uses: actions/upload-artifact@v4
+        with:
+          name: bad-captures
+          path: taichi-release-tests/bad-compare/*
+          retention-days: 7
+
+
+  build_ios_capi:
+    name: Build iOS C-API Static Library
+    needs: check_files
+    timeout-minutes: ${{ github.event.schedule != '0 18 * * *' && 60 || 120 }}
+    runs-on: [self-hosted, m1]
+    env:
+      PY: "3.10"
+    steps:
+      - name: Workaround checkout Needed single revision issue
+        run: git submodule foreach 'git rev-parse HEAD > /dev/null 2>&1 || rm -rf $PWD' || true
+
+      - uses: actions/checkout@v3
+        with:
+          fetch-depth: '0'
+          submodules: 'recursive'
+
+      - name: Build
+        if: ${{ needs.check_files.outputs.run_job != 'false' }}
+        run: .github/workflows/scripts/build.py ios
+
+      - name: Save Compiled Static Library
+        if: ${{ needs.check_files.outputs.run_job != 'false' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: libtaichi_c_api.iOS.a
+          path: 'dist/C-API-iOS/*.a'
+          retention-days: 7
+
+  build_and_test_docs:
+    name: Build and Test (Docs)
+    needs: check_files
+    timeout-minutes: ${{ github.event.schedule != '0 18 * * *' && 90 || 120 }}
+    runs-on: [self-hosted, Linux, cuda, vulkan, cn]
+    env:
+      PY: '3.8'
+      PROJECT_NAME: taichi
+      TI_WANTED_ARCHS: 'cpu,cuda,vulkan,opengl,gles'
+      TI_DEVICE_MEMORY_GB: '1'
+      TI_RUN_RELEASE_TESTS: '1'
+      TAICHI_CMAKE_ARGS: >-
+        -DTI_WITH_OPENGL:BOOL=ON
+        -DTI_WITH_VULKAN:BOOL=ON
+        -DTI_WITH_BACKTRACE:BOOL=ON
+        -DTI_BUILD_TESTS:BOOL=ON
+        -DTI_WITH_C_API=ON
+
+    steps:
+      - name: Workaround checkout Needed single revision issue
+        run: git submodule foreach 'git rev-parse HEAD > /dev/null 2>&1 || rm -rf $PWD' || true
+
+      - uses: actions/checkout@v3
+        with:
+          submodules: 'recursive'
+          fetch-depth: '0'
+
+      - name: Check if there is anything Markdown modified but not covered by CI
+        if: ${{ github.event_name == 'pull_request' }}
+        run: |
+          set +e
+          sort docs/cover-in-ci.lst > /tmp/sorted-cover-list
+          git diff --name-only $BASE_SHA $HEAD_SHA | grep '\.md$' | sort > /tmp/sorted-modified-list
+          diff -u /tmp/sorted-cover-list /tmp/sorted-modified-list | grep '^\+docs' > /tmp/uncovered-list
+          if [ -s /tmp/uncovered-list ]; then
+            echo Please add modified docs to docs/cover-in-ci.lst!
+            echo
+            cat /tmp/uncovered-list
+            exit 1
+          else
+            echo No modified docs, or modified docs are all covered in the list
+          fi
         env:
-          TI_WANTED_ARCHS: "metal,vulkan,cpu"
-          PY: ${{ matrix.python }}
-          PLATFORM: "m1"
-          TI_CI: 1
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+
+      - name: Prepare Environment
+        run: |
+          . .github/workflows/scripts/common-utils.sh
+          prepare-build-cache
+          echo CI_DOCKER_RUN_EXTRA_ARGS="-v $(pwd):/home/dev/taichi" >> $GITHUB_ENV
+
+      - name: Build & Install
+        run: |
+          . .github/workflows/scripts/common-utils.sh
+
+          ci-docker-run-gpu --name taichi-build \
+            registry.botmaster.tgr/taichi-build-cuda:${{ env.CI_IMAGE_VERSION }} \
+            /home/dev/taichi/.github/workflows/scripts/build.py
+
+      - name: Test
+        id: test
+        run: |
+          . .github/workflows/scripts/common-utils.sh
+
+          ci-docker-run-gpu --name taichi-test \
+             registry.botmaster.tgr/taichi-test-cuda:${{ env.CI_IMAGE_VERSION }} \
+             /home/dev/taichi/.github/workflows/scripts/unix-test-docs.sh
+
+  # aot_build_and_test_android_apps:
+  #   name: AOT Build and Test Android Apps
+  #   # Skip this job when testing the offline cache
+  #   if: ${{ github.event.schedule != '0 18 * * *' }}
+  #   needs: check_files
+  #   runs-on: [self-hosted, Linux, cn]
+  #   timeout-minutes: 60
+  #   permissions:
+  #     packages: read
+  #     contents: read
+  #   env:
+  #     REDIS_HOST: 172.16.5.1
+  #     PY: '3.9'
+  #   steps:
+  #     - name: Workaround checkout Needed single revision issue
+  #       run: git submodule foreach 'git rev-parse HEAD > /dev/null 2>&1 || rm -rf $PWD' || true
+
+  #     - uses: actions/checkout@v3
+  #       name: Checkout taichi
+  #       with:
+  #         fetch-depth: '0'
+  #         submodules: "recursive"
+
+  #     - name: Prepare Environment
+  #       if: ${{ needs.check_files.outputs.run_job != 'false' }}
+  #       run: >-
+  #         . .github/workflows/scripts/common-utils.sh;
+  #         prepare-build-cache;
+
+  #         TAICHI_WHEEL_DIR=$(mktemp -d);
+  #         echo TAICHI_WHEEL_DIR=$TAICHI_WHEEL_DIR >> $GITHUB_ENV;
+  #         chmod 0777 $TAICHI_WHEEL_DIR;
+
+  #         echo CI_DOCKER_RUN_EXTRA_ARGS="
+  #         -e REDIS_HOST
+  #         -v $(pwd):/home/dev/taichi
+  #         -v $TAICHI_WHEEL_DIR:/taichi-wheel
+  #         " >> $GITHUB_ENV;
+
+  #     - name: Build Host Taichi
+  #       if: ${{ needs.check_files.outputs.run_job != 'false' }}
+  #       run: |
+  #         . .github/workflows/scripts/common-utils.sh
+  #         ci-docker-run --name taichi-build-host \
+  #           -v $TAICHI_WHEEL_DIR:/home/dev/taichi/dist \
+  #           registry.botmaster.tgr/taichi-build-cuda:${{ env.CI_IMAGE_VERSION }} \
+  #           /home/dev/taichi/.github/workflows/scripts/build.py
+  #       env:
+  #         TAICHI_CMAKE_ARGS: >-
+  #           -DTI_WITH_OPENGL:BOOL=ON
+  #           -DTI_WITH_VULKAN:BOOL=ON
+  #           -DTI_WITH_C_API=OFF
+
+  #     - name: Build For Android
+  #       if: ${{ needs.check_files.outputs.run_job != 'false' }}
+  #       run: |
+  #         . .github/workflows/scripts/common-utils.sh
+  #         git clean -fxd
+  #         ci-docker-run --name taichi-build-android \
+  #           registry.botmaster.tgr/taichi-build-android:${{ env.CI_IMAGE_VERSION }} \
+  #           /home/dev/taichi/.github/workflows/scripts/build.py android
+  #       env:
+  #         TAICHI_CMAKE_ARGS: >-
+  #           -DTI_WITH_OPENGL:BOOL=ON
+  #           -DTI_WITH_VULKAN:BOOL=ON
+  #           -DTI_WITH_LLVM:BOOL=OFF
+  #           -DTI_WITH_C_API:BOOL=ON
+
+  #     - name: Test For Android AOT
+  #       if: ${{ needs.check_files.outputs.run_job != 'false' }}
+  #       run: |
+  #         . .github/workflows/scripts/common-utils.sh
+  #         ci-docker-run-gpu --name taichi-test-android \
+  #           registry.botmaster.tgr/taichi-test-android:${{ env.CI_IMAGE_VERSION }} \
+  #           /home/dev/taichi/.github/workflows/scripts/aot-demo.sh build-and-smoke-test-android-aot-demo
+
+  #       env:
+  #         TI_DEVICE_MEMORY_GB: '0.1'
+
+  # aot_build_and_test_android_headless_demos:
+  #   name: AOT Build and Test Android Headless Demos
+  #   # Skip this job when testing the offline cache
+  #   if: ${{ github.event.schedule != '0 18 * * *' }}
+  #   needs: check_files
+  #   runs-on: [self-hosted, Linux, cn]
+  #   timeout-minutes: 60
+  #   permissions:
+  #     packages: read
+  #     contents: read
+  #   env:
+  #     REDIS_HOST: 172.16.5.1
+  #     PY: '3.9'
+  #   steps:
+  #     - name: Workaround checkout Needed single revision issue
+  #       run: git submodule foreach 'git rev-parse HEAD > /dev/null 2>&1 || rm -rf $PWD' || true
+
+  #     - uses: actions/checkout@v3
+  #       name: Checkout taichi
+  #       with:
+  #         fetch-depth: '0'
+  #         submodules: "recursive"
+
+  #     - name: Prepare Environment
+  #       if: ${{ needs.check_files.outputs.run_job != 'false' }}
+  #       run: >-
+  #         . .github/workflows/scripts/common-utils.sh;
+  #         prepare-build-cache;
+
+  #         TAICHI_WHEEL_DIR=$(mktemp -d);
+  #         echo TAICHI_WHEEL_DIR=$TAICHI_WHEEL_DIR >> $GITHUB_ENV;
+  #         chmod 0777 $TAICHI_WHEEL_DIR;
+
+  #         echo CI_DOCKER_RUN_EXTRA_ARGS="
+  #         -e REDIS_HOST
+  #         -v $(pwd):/home/dev/taichi
+  #         -v $TAICHI_WHEEL_DIR:/taichi-wheel
+  #         " >> $GITHUB_ENV;
+
+  #     - name: Build Host Taichi
+  #       if: ${{ needs.check_files.outputs.run_job != 'false' }}
+  #       run: |
+  #         . .github/workflows/scripts/common-utils.sh
+  #         ci-docker-run --name taichi-build-host \
+  #           -v $TAICHI_WHEEL_DIR:/home/dev/taichi/dist \
+  #           registry.botmaster.tgr/taichi-build-cuda:${{ env.CI_IMAGE_VERSION }} \
+  #           /home/dev/taichi/.github/workflows/scripts/build.py
+  #       env:
+  #         TAICHI_CMAKE_ARGS: >-
+  #           -DTI_WITH_OPENGL:BOOL=ON
+  #           -DTI_WITH_VULKAN:BOOL=ON
+  #           -DTI_WITH_C_API=OFF
+
+  #     - name: Build For Android
+  #       if: ${{ needs.check_files.outputs.run_job != 'false' }}
+  #       run: |
+  #         . .github/workflows/scripts/common-utils.sh
+  #         git clean -fxd
+  #         ci-docker-run --name taichi-build-android \
+  #           registry.botmaster.tgr/taichi-build-android:${{ env.CI_IMAGE_VERSION }} \
+  #           /home/dev/taichi/.github/workflows/scripts/build.py android
+  #       env:
+  #         TAICHI_CMAKE_ARGS: >-
+  #           -DTI_WITH_OPENGL:BOOL=ON
+  #           -DTI_WITH_VULKAN:BOOL=ON
+  #           -DTI_WITH_LLVM:BOOL=OFF
+  #           -DTI_WITH_C_API=ON
+
+  #     - name: Build & Run C-API Headless Demos (Android)
+  #       if: ${{ needs.check_files.outputs.run_job != 'false' }}
+  #       run: |
+  #         . .github/workflows/scripts/common-utils.sh
+  #         ci-docker-run-gpu --name taichi-test-capi-headless-demo \
+  #           registry.botmaster.tgr/taichi-build-android:${{ env.CI_IMAGE_VERSION }} \
+  #           /home/dev/taichi/.github/workflows/scripts/aot-demo.sh build-and-test-headless-demo
+  #       env:
+  #         TI_DEVICE_MEMORY_GB: '0.1'
+
+  # aot_build_and_test_android_unity_examples:
+  #   name: AOT Build and Test Android Unity Examples
+  #   # Skip this job when testing the offline cache
+  #   if: ${{ github.event.schedule != '0 18 * * *' }}
+  #   needs: check_files
+  #   runs-on: [self-hosted, Linux, cn]
+  #   timeout-minutes: 60
+  #   permissions:
+  #     packages: read
+  #     contents: read
+  #   env:
+  #     REDIS_HOST: 172.16.5.1
+  #     PY: '3.9'
+  #   steps:
+  #     - name: Workaround checkout Needed single revision issue
+  #       run: git submodule foreach 'git rev-parse HEAD > /dev/null 2>&1 || rm -rf $PWD' || true
+
+  #     - uses: actions/checkout@v3
+  #       name: Checkout taichi
+  #       with:
+  #         fetch-depth: '0'
+  #         submodules: "recursive"
+
+  #     - name: Prepare Environment
+  #       if: ${{ needs.check_files.outputs.run_job != 'false' }}
+  #       run: >-
+  #         . .github/workflows/scripts/common-utils.sh;
+  #         prepare-build-cache;
+
+  #         TAICHI_WHEEL_DIR=$(mktemp -d);
+  #         echo TAICHI_WHEEL_DIR=$TAICHI_WHEEL_DIR >> $GITHUB_ENV;
+  #         chmod 0777 $TAICHI_WHEEL_DIR;
+
+  #         echo CI_DOCKER_RUN_EXTRA_ARGS="
+  #         -e REDIS_HOST
+  #         -v $(pwd):/home/dev/taichi
+  #         -v $TAICHI_WHEEL_DIR:/taichi-wheel
+  #         " >> $GITHUB_ENV;
+
+  #     - name: Build Host Taichi
+  #       if: ${{ needs.check_files.outputs.run_job != 'false' }}
+  #       run: |
+  #         . .github/workflows/scripts/common-utils.sh
+  #         ci-docker-run --name taichi-build-host \
+  #           -v $TAICHI_WHEEL_DIR:/home/dev/taichi/dist \
+  #           registry.botmaster.tgr/taichi-build-cuda:${{ env.CI_IMAGE_VERSION }} \
+  #           /home/dev/taichi/.github/workflows/scripts/build.py
+  #       env:
+  #         TAICHI_CMAKE_ARGS: >-
+  #           -DTI_WITH_OPENGL:BOOL=ON
+  #           -DTI_WITH_VULKAN:BOOL=ON
+  #           -DTI_WITH_C_API=OFF
+
+  #     - name: Build For Android
+  #       if: ${{ needs.check_files.outputs.run_job != 'false' }}
+  #       run: |
+  #         . .github/workflows/scripts/common-utils.sh
+  #         git clean -fxd
+  #         ci-docker-run --name taichi-build-android \
+  #           registry.botmaster.tgr/taichi-build-android:${{ env.CI_IMAGE_VERSION }} \
+  #           /home/dev/taichi/.github/workflows/scripts/build.py android
+  #       env:
+  #         TAICHI_CMAKE_ARGS: >-
+  #           -DTI_WITH_OPENGL:BOOL=ON
+  #           -DTI_WITH_VULKAN:BOOL=ON
+  #           -DTI_WITH_LLVM:BOOL=OFF
+  #           -DTI_WITH_C_API=ON
+
+  #     - name: Prepare Unity Build Environment
+  #       if: ${{ needs.check_files.outputs.run_job != 'false' }}
+  #       run: |
+  #         . .github/workflows/scripts/common-utils.sh
+  #         ci-docker-run --name taichi-prepare-unity-build-env \
+  #           registry.botmaster.tgr/taichi-build-android:${{ env.CI_IMAGE_VERSION }} \
+  #           /home/dev/taichi/.github/workflows/scripts/aot-demo.sh prepare-unity-build-env
+
+  #     - name: Build Taichi-UnityExample
+  #       if: ${{ needs.check_files.outputs.run_job != 'false' }}
+  #       run: |
+  #         . .github/workflows/scripts/common-utils.sh
+  #         ci-docker-run --name taichi-build-unity-demo \
+  #           registry.taichigraphics.com/unityci-editor:ubuntu-2020.3.14f1-android-1-with-secret-sauce \
+  #           /home/dev/taichi/.github/workflows/scripts/aot-demo.sh build-unity-demo
+
+  #     - name: Run Taichi-UnityExample (C-API)
+  #       if: ${{ needs.check_files.outputs.run_job != 'false' }}
+  #       run: |
+  #         . .github/workflows/scripts/common-utils.sh
+  #         ci-docker-run --name taichi-run-unity-demo \
+  #           registry.botmaster.tgr/taichi-test-android:${{ env.CI_IMAGE_VERSION }} \
+  #           /home/dev/taichi/.github/workflows/scripts/aot-demo.sh smoke-test-unity-demo
+
+  aot_build_and_test_gpu_linux:
+    name: AOT Build and Test (GPU)
+    needs: check_files
+    timeout-minutes: ${{ github.event.schedule != '0 18 * * *' && 90 || 120 }}
+    strategy:
+      matrix:
+        tags:
+          - [self-hosted, cuda, vulkan, cn, driver550]
+    env:
+      PY: '3.8'
+      PROJECT_NAME: taichi
+      TAICHI_CMAKE_ARGS: >-
+        -DTI_WITH_OPENGL:BOOL=ON
+        -DTI_WITH_VULKAN:BOOL=ON
+        -DTI_WITH_BACKTRACE:BOOL=ON
+        -DTI_BUILD_TESTS:BOOL=ON
+        -DTI_WITH_C_API=ON
+
+    runs-on: ${{ matrix.tags }}
+    steps:
+      - name: Restart X Server
+        run: |
+          sudo systemctl restart xorg
+
+      - name: Workaround checkout Needed single revision issue
+        run: git submodule foreach 'git rev-parse HEAD > /dev/null 2>&1 || rm -rf $PWD' || true
+
+      - uses: actions/checkout@v3
+        with:
+          submodules: 'recursive'
+          fetch-depth: '0'
+
+      - name: Prepare Environment
+        run: |
+          . .github/workflows/scripts/common-utils.sh
+          prepare-build-cache
+          echo CI_DOCKER_RUN_EXTRA_ARGS="-v $(pwd):/home/dev/taichi" >> $GITHUB_ENV
+
+      - name: Build & Install
+        run: |
+          [[ ${{needs.check_files.outputs.run_job}} == false ]] && exit 0
+          . .github/workflows/scripts/common-utils.sh
+
+          ci-docker-run-gpu --name taichi-build \
+            registry.botmaster.tgr/taichi-build-cuda:${{ env.CI_IMAGE_VERSION }} \
+            /home/dev/taichi/.github/workflows/scripts/build.py
+
+      - name: Check C-API Export Symbols
+        run: |
+          [[ ${{needs.check_files.outputs.run_job}} == false ]] && exit 0
+          . .github/workflows/scripts/common-utils.sh
+
+          ci-docker-run-gpu --name taichi-test-check-c-api-export-symbols \
+            registry.botmaster.tgr/taichi-build-cuda:${{ env.CI_IMAGE_VERSION }} \
+            /home/dev/taichi/.github/workflows/scripts/aot-demo.sh check-c-api-export-symbols
+
+      - name: Build & Run C-API Headless Demos (Desktop)
+        run: |
+          [[ ${{needs.check_files.outputs.run_job}} == false ]] && exit 0
+          . .github/workflows/scripts/common-utils.sh
+          chown -R 1000:1000 .
+          ci-docker-run-gpu --name taichi-test-capi-headless-demo-desktop \
+            registry.botmaster.tgr/taichi-build-cuda:${{ env.CI_IMAGE_VERSION }} \
+            /home/dev/taichi/.github/workflows/scripts/aot-demo.sh build-and-test-headless-demo-desktop
+        env:
+          TI_DEVICE_MEMORY_GB: '0.1'
+
+      - name: Compatibility Test
+        id: test
+        run: |
+          [[ ${{needs.check_files.outputs.run_job}} == false ]] && exit 0
+          . .github/workflows/scripts/common-utils.sh
+
+          ci-docker-run-gpu --name taichi-test \
+             registry.botmaster.tgr/taichi-build-cuda:${{ env.CI_IMAGE_VERSION }} \
+             /home/dev/taichi/.github/workflows/scripts/unix_aot_compat_test.sh
+
+      - name: Save wheel if test failed
+        if: failure() && steps.test.conclusion == 'failure'
+        uses: actions/upload-artifact@v4
+        with:
+          name: broken-wheel
+          path: dist/*
+          retention-days: 7
+
+      - name: Save Bad Captures
+        if: failure() && steps.test.conclusion == 'failure'
+        uses: actions/upload-artifact@v4
+        with:
+          name: bad-captures
+          path: taichi-release-tests/bad-compare/*
+          retention-days: 7

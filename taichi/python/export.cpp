@@ -7,10 +7,10 @@
 #include "taichi/common/interface.h"
 #include "taichi/util/io.h"
 
-TI_NAMESPACE_BEGIN
+namespace taichi {
 
-PYBIND11_MODULE(taichi_core, m) {
-  m.doc() = "taichi_core";
+PYBIND11_MODULE(taichi_python, m) {
+  m.doc() = "taichi_python";
 
   for (auto &kv : InterfaceHolder::get_instance()->methods) {
     kv.second(&m);
@@ -23,4 +23,4 @@ PYBIND11_MODULE(taichi_core, m) {
   export_ggui(m);
 }
 
-TI_NAMESPACE_END
+}  // namespace taichi

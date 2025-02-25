@@ -2,7 +2,7 @@
 #include "taichi/ir/statements.h"
 #include "taichi/common/logging.h"
 
-TLANG_NAMESPACE_BEGIN
+namespace taichi::lang {
 
 namespace {
 
@@ -85,31 +85,31 @@ IRBuilder::IfGuard::~IfGuard() {
 
 RangeForStmt *IRBuilder::create_range_for(Stmt *begin,
                                           Stmt *end,
-                                          int bit_vectorize,
+                                          bool is_bit_vectorized,
                                           int num_cpu_threads,
                                           int block_dim,
                                           bool strictly_serialized) {
   return insert(Stmt::make_typed<RangeForStmt>(
-      begin, end, std::make_unique<Block>(), bit_vectorize, num_cpu_threads,
+      begin, end, std::make_unique<Block>(), is_bit_vectorized, num_cpu_threads,
       block_dim, strictly_serialized));
 }
 
 StructForStmt *IRBuilder::create_struct_for(SNode *snode,
-                                            int bit_vectorize,
+                                            bool is_bit_vectorized,
                                             int num_cpu_threads,
                                             int block_dim) {
   return insert(Stmt::make_typed<StructForStmt>(
-      snode, std::make_unique<Block>(), bit_vectorize, num_cpu_threads,
+      snode, std::make_unique<Block>(), is_bit_vectorized, num_cpu_threads,
       block_dim));
 }
 
 MeshForStmt *IRBuilder::create_mesh_for(mesh::Mesh *mesh,
                                         mesh::MeshElementType element_type,
-                                        int bit_vectorize,
+                                        bool is_bit_vectorized,
                                         int num_cpu_threads,
                                         int block_dim) {
   return insert(Stmt::make_typed<MeshForStmt>(
-      mesh, element_type, std::make_unique<Block>(), bit_vectorize,
+      mesh, element_type, std::make_unique<Block>(), is_bit_vectorized,
       num_cpu_threads, block_dim));
 }
 
@@ -139,53 +139,51 @@ LoopIndexStmt *IRBuilder::get_loop_index(Stmt *loop, int index) {
 }
 
 ConstStmt *IRBuilder::get_int32(int32 value) {
-  return insert(
-      Stmt::make_typed<ConstStmt>(LaneAttribute<TypedConstant>(TypedConstant(
-          TypeFactory::get_instance().get_primitive_type(PrimitiveTypeID::i32),
-          value))));
+  return insert(Stmt::make_typed<ConstStmt>(TypedConstant(
+      TypeFactory::get_instance().get_primitive_type(PrimitiveTypeID::i32),
+      value)));
 }
 
 ConstStmt *IRBuilder::get_int64(int64 value) {
-  return insert(
-      Stmt::make_typed<ConstStmt>(LaneAttribute<TypedConstant>(TypedConstant(
-          TypeFactory::get_instance().get_primitive_type(PrimitiveTypeID::i64),
-          value))));
+  return insert(Stmt::make_typed<ConstStmt>(TypedConstant(
+      TypeFactory::get_instance().get_primitive_type(PrimitiveTypeID::i64),
+      value)));
 }
 
 ConstStmt *IRBuilder::get_uint32(uint32 value) {
-  return insert(
-      Stmt::make_typed<ConstStmt>(LaneAttribute<TypedConstant>(TypedConstant(
-          TypeFactory::get_instance().get_primitive_type(PrimitiveTypeID::u32),
-          value))));
+  return insert(Stmt::make_typed<ConstStmt>(TypedConstant(
+      TypeFactory::get_instance().get_primitive_type(PrimitiveTypeID::u32),
+      value)));
 }
 
 ConstStmt *IRBuilder::get_uint64(uint64 value) {
-  return insert(
-      Stmt::make_typed<ConstStmt>(LaneAttribute<TypedConstant>(TypedConstant(
-          TypeFactory::get_instance().get_primitive_type(PrimitiveTypeID::u64),
-          value))));
+  return insert(Stmt::make_typed<ConstStmt>(TypedConstant(
+      TypeFactory::get_instance().get_primitive_type(PrimitiveTypeID::u64),
+      value)));
 }
 
 ConstStmt *IRBuilder::get_float32(float32 value) {
-  return insert(
-      Stmt::make_typed<ConstStmt>(LaneAttribute<TypedConstant>(TypedConstant(
-          TypeFactory::get_instance().get_primitive_type(PrimitiveTypeID::f32),
-          value))));
+  return insert(Stmt::make_typed<ConstStmt>(TypedConstant(
+      TypeFactory::get_instance().get_primitive_type(PrimitiveTypeID::f32),
+      value)));
 }
 
 ConstStmt *IRBuilder::get_float64(float64 value) {
-  return insert(
-      Stmt::make_typed<ConstStmt>(LaneAttribute<TypedConstant>(TypedConstant(
-          TypeFactory::get_instance().get_primitive_type(PrimitiveTypeID::f64),
-          value))));
+  return insert(Stmt::make_typed<ConstStmt>(TypedConstant(
+      TypeFactory::get_instance().get_primitive_type(PrimitiveTypeID::f64),
+      value)));
 }
 
 RandStmt *IRBuilder::create_rand(DataType value_type) {
   return insert(Stmt::make_typed<RandStmt>(value_type));
 }
 
-ArgLoadStmt *IRBuilder::create_arg_load(int arg_id, DataType dt, bool is_ptr) {
-  return insert(Stmt::make_typed<ArgLoadStmt>(arg_id, dt, is_ptr));
+ArgLoadStmt *IRBuilder::create_arg_load(const std::vector<int> &arg_id,
+                                        DataType dt,
+                                        bool is_ptr,
+                                        int arg_depth) {
+  return insert(Stmt::make_typed<ArgLoadStmt>(arg_id, dt, is_ptr,
+                                              /*create_load*/ true, arg_depth));
 }
 
 ReturnStmt *IRBuilder::create_return(Stmt *value) {
@@ -274,6 +272,14 @@ UnaryOpStmt *IRBuilder::create_exp(Stmt *value) {
 
 UnaryOpStmt *IRBuilder::create_log(Stmt *value) {
   return insert(Stmt::make_typed<UnaryOpStmt>(UnaryOpType::log, value));
+}
+
+UnaryOpStmt *IRBuilder::create_popcnt(Stmt *value) {
+  return insert(Stmt::make_typed<UnaryOpStmt>(UnaryOpType::popcnt, value));
+}
+
+UnaryOpStmt *IRBuilder::create_clz(Stmt *value) {
+  return insert(Stmt::make_typed<UnaryOpStmt>(UnaryOpType::clz, value));
 }
 
 BinaryOpStmt *IRBuilder::create_add(Stmt *l, Stmt *r) {
@@ -368,6 +374,15 @@ BinaryOpStmt *IRBuilder::create_cmp_ne(Stmt *l, Stmt *r) {
   return insert(Stmt::make_typed<BinaryOpStmt>(BinaryOpType::cmp_ne, l, r));
 }
 
+BinaryOpStmt *IRBuilder::create_logical_or(Stmt *l, Stmt *r) {
+  return insert(Stmt::make_typed<BinaryOpStmt>(BinaryOpType::logical_or, l, r));
+}
+
+BinaryOpStmt *IRBuilder::create_logical_and(Stmt *l, Stmt *r) {
+  return insert(
+      Stmt::make_typed<BinaryOpStmt>(BinaryOpType::logical_and, l, r));
+}
+
 AtomicOpStmt *IRBuilder::create_atomic_add(Stmt *dest, Stmt *val) {
   return insert(Stmt::make_typed<AtomicOpStmt>(AtomicOpType::add, dest, val));
 }
@@ -399,6 +414,10 @@ AtomicOpStmt *IRBuilder::create_atomic_xor(Stmt *dest, Stmt *val) {
       Stmt::make_typed<AtomicOpStmt>(AtomicOpType::bit_xor, dest, val));
 }
 
+AtomicOpStmt *IRBuilder::create_atomic_mul(Stmt *dest, Stmt *val) {
+  return insert(Stmt::make_typed<AtomicOpStmt>(AtomicOpType::mul, dest, val));
+}
+
 TernaryOpStmt *IRBuilder::create_select(Stmt *cond,
                                         Stmt *true_result,
                                         Stmt *false_result) {
@@ -411,7 +430,7 @@ AllocaStmt *IRBuilder::create_local_var(DataType dt) {
 }
 
 LocalLoadStmt *IRBuilder::create_local_load(AllocaStmt *ptr) {
-  return insert(Stmt::make_typed<LocalLoadStmt>(LocalAddress(ptr, 0)));
+  return insert(Stmt::make_typed<LocalLoadStmt>(ptr));
 }
 
 void IRBuilder::create_local_store(AllocaStmt *ptr, Stmt *data) {
@@ -426,9 +445,10 @@ GlobalPtrStmt *IRBuilder::create_global_ptr(
 
 ExternalPtrStmt *IRBuilder::create_external_ptr(
     ArgLoadStmt *ptr,
-    const std::vector<Stmt *> &indices) {
-  return insert(
-      Stmt::make_typed<ExternalPtrStmt>(ptr, indices, std::vector<int>(), 0));
+    const std::vector<Stmt *> &indices,
+    bool is_grad) {
+  return insert(Stmt::make_typed<ExternalPtrStmt>(ptr, indices, indices.size(),
+                                                  std::vector<int>(), is_grad));
 }
 
 AdStackAllocaStmt *IRBuilder::create_ad_stack(const DataType &dt,
@@ -451,6 +471,10 @@ AdStackLoadTopStmt *IRBuilder::ad_stack_load_top(AdStackAllocaStmt *stack) {
 AdStackLoadTopAdjStmt *IRBuilder::ad_stack_load_top_adjoint(
     AdStackAllocaStmt *stack) {
   return insert(Stmt::make_typed<AdStackLoadTopAdjStmt>(stack));
+}
+
+MatrixInitStmt *IRBuilder::create_matrix_init(std::vector<Stmt *> elements) {
+  return insert(Stmt::make_typed<MatrixInitStmt>(elements));
 }
 
 void IRBuilder::ad_stack_accumulate_adjoint(AdStackAllocaStmt *stack,
@@ -477,17 +501,18 @@ MeshRelationAccessStmt *IRBuilder::get_relation_access(
       mesh, mesh_idx, to_type, neighbor_idx));
 }
 
-MeshIndexConversionStmt *IRBuilder::get_index_conversion(
-    mesh::Mesh *mesh,
-    mesh::MeshElementType idx_type,
-    Stmt *idx,
-    mesh::ConvType conv_type) {
-  return insert(Stmt::make_typed<MeshIndexConversionStmt>(mesh, idx_type, idx,
-                                                          conv_type));
-}
-
 MeshPatchIndexStmt *IRBuilder::get_patch_index() {
   return insert(Stmt::make_typed<MeshPatchIndexStmt>());
 }
+ArgLoadStmt *IRBuilder::create_ndarray_arg_load(const std::vector<int> &arg_id,
+                                                DataType dt,
+                                                int ndim,
+                                                int arg_depth) {
+  auto type = TypeFactory::get_instance().get_ndarray_struct_type(dt, ndim);
 
-TLANG_NAMESPACE_END
+  return insert(Stmt::make_typed<ArgLoadStmt>(arg_id, type, /*is_ptr=*/true,
+                                              /*create_load=*/false,
+                                              /*arg_depth=*/arg_depth));
+}
+
+}  // namespace taichi::lang

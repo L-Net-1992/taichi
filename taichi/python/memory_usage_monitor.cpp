@@ -8,12 +8,10 @@
 #include "taichi/system/threading.h"
 #include "taichi/system/timer.h"
 
-TI_NAMESPACE_BEGIN
+namespace taichi {
 
 namespace py = pybind11;
 using namespace py::literals;
-
-constexpr size_t VirtualMemoryAllocator::page_size;
 
 float64 bytes_to_GB(float64 bytes) {
   return float64(bytes) * pow<3>(1.0_f64 / 1024.0_f64);
@@ -116,4 +114,4 @@ class MemoryTest2 : public Task {
 TI_IMPLEMENTATION(Task, MemoryTest, "mem_test");
 TI_IMPLEMENTATION(Task, MemoryTest2, "mem_test2");
 
-TI_NAMESPACE_END
+}  // namespace taichi

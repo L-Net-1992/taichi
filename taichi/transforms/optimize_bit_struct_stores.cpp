@@ -32,9 +32,10 @@ class CreateBitStructStores : public BasicStmtVisitor {
 
     // We only handle bit_struct pointers here.
 
-    auto s = Stmt::make<BitStructStoreStmt>(get_ch->input_ptr,
-                                            std::vector<int>{get_ch->chid},
-                                            std::vector<Stmt *>{stmt->val});
+    auto s = Stmt::make<BitStructStoreStmt>(
+        get_ch->input_ptr,
+        std::vector<int>{get_ch->output_snode->id_in_bit_struct},
+        std::vector<Stmt *>{stmt->val});
     stmt->replace_with(VecStatement(std::move(s)));
   }
 };
@@ -61,28 +62,33 @@ class MergeBitStructStores : public BasicStmtVisitor {
     auto &statements = block->statements;
     std::unordered_map<Stmt *, std::vector<BitStructStoreStmt *>>
         ptr_to_bit_struct_stores;
+    std::unordered_set<Stmt *> loaded_after_store;
     std::vector<Stmt *> statements_to_delete;
     for (int i = 0; i <= (int)statements.size(); i++) {
       // TODO: in some cases BitStructStoreStmts across container statements can
       // still be merged, similar to basic block v.s. CFG optimizations.
       if (i == statements.size() || statements[i]->is_container_statement()) {
-        for (const auto &item : ptr_to_bit_struct_stores) {
-          auto ptr = item.first;
-          auto stores = item.second;
-          if (stores.size() == 1)
+        for (const auto &[ptr, stores] : ptr_to_bit_struct_stores) {
+          if (stores.size() == 1) {
             continue;
-          std::map<int, Stmt *> values;
-          for (auto s : stores) {
-            for (int j = 0; j < (int)s->ch_ids.size(); j++) {
-              values[s->ch_ids[j]] = s->values[j];
-            }
           }
+
           std::vector<int> ch_ids;
           std::vector<Stmt *> store_values;
-          for (auto &ch_id_and_value : values) {
-            ch_ids.push_back(ch_id_and_value.first);
-            store_values.push_back(ch_id_and_value.second);
+          for (auto s : stores) {
+            for (int j = 0; j < (int)s->ch_ids.size(); j++) {
+              auto const &ch_id = s->ch_ids[j];
+              auto const &store_value = s->values[j];
+              ch_ids.push_back(ch_id);
+              store_values.push_back(store_value);
+            }
           }
+
+          auto ch_ids_dup = [&ch_ids = std::as_const(ch_ids)]() {
+            std::unordered_set<int> ch_ids_set(ch_ids.begin(), ch_ids.end());
+            return ch_ids_set.size() != ch_ids.size();
+          };
+          TI_ASSERT(!ch_ids_dup());
           // Now erase all (except the last) related BitSturctStoreStmts.
           // Replace the last one with a merged version.
           for (int j = 0; j < (int)stores.size() - 1; j++) {
@@ -93,10 +99,38 @@ class MergeBitStructStores : public BasicStmtVisitor {
           modified_ = true;
         }
         ptr_to_bit_struct_stores.clear();
-        continue;
+        loaded_after_store.clear();
       }
-      if (auto stmt = statements[i]->cast<BitStructStoreStmt>()) {
-        ptr_to_bit_struct_stores[stmt->ptr].push_back(stmt);
+      // Skip bit store fusion when there's a load between multiple stores.
+      // Example:
+      //   <^qi16> $18 = get child [...] $17
+      //   $178 : atomic bit_struct_store $17, ch_ids=[0], values=[$11]
+      //   <i32> $20 = global load $18
+      //   print "x[i]=", $20, "\n"
+      //   <i32> $22 = add $11 $2
+      //   <^qi16> $23 = get child [...] $17
+      //   $179 : atomic bit_struct_store $17, ch_ids=[1], values=[$22]
+      //   <i32> $25 = global load $23
+      //   print "y[i]=", $25, "\n"
+      // In this case, $178 and $179 cannot be merged into a single store
+      // because the stored value $11 is loaded as $20 and then printed.
+      else if (auto stmt = statements[i]->cast<BitStructStoreStmt>()) {
+        // Phase 2: Find bit store after a marked load
+        if (loaded_after_store.find(stmt->ptr) != loaded_after_store.end()) {
+          // Disable store fusion for this bit struct
+          ptr_to_bit_struct_stores.erase(stmt->ptr);
+          loaded_after_store.erase(stmt->ptr);
+        } else {
+          ptr_to_bit_struct_stores[stmt->ptr].push_back(stmt);
+        }
+      } else if (auto load_stmt = statements[i]->cast<GlobalLoadStmt>()) {
+        // Phase 1: Find and mark any global loads after bit_struct_store
+        auto const &load_ops = load_stmt->src->get_operands();
+        auto load_src = load_ops.empty() ? nullptr : load_ops.front();
+        if (ptr_to_bit_struct_stores.find(load_src) !=
+            ptr_to_bit_struct_stores.end()) {
+          loaded_after_store.insert(load_src);
+        }
       }
     }
 
@@ -146,7 +180,7 @@ class DemoteAtomicBitStructStores : public BasicStmtVisitor {
     } else if (current_offloaded->task_type == OffloadedTaskType::range_for ||
                current_offloaded->task_type == OffloadedTaskType::mesh_for ||
                current_offloaded->task_type == OffloadedTaskType::struct_for) {
-      auto *snode = stmt->get_bit_struct_snode();
+      auto *snode = stmt->ptr->as<SNodeLookupStmt>()->snode;
       // Find the nearest non-bit-level ancestor
       while (snode->is_bit_level) {
         snode = snode->parent;
@@ -191,7 +225,7 @@ class DemoteAtomicBitStructStores : public BasicStmtVisitor {
 
 }  // namespace
 
-TLANG_NAMESPACE_BEGIN
+namespace taichi::lang {
 
 namespace irpass {
 void optimize_bit_struct_stores(IRNode *root,
@@ -215,4 +249,4 @@ void optimize_bit_struct_stores(IRNode *root,
 
 }  // namespace irpass
 
-TLANG_NAMESPACE_END
+}  // namespace taichi::lang

@@ -5,8 +5,9 @@
 
 #include "taichi/ir/snode.h"
 
-namespace taichi {
-namespace lang {
+#include "spirv_types.h"
+
+namespace taichi::lang {
 namespace spirv {
 
 struct SNodeDescriptor {
@@ -14,13 +15,10 @@ struct SNodeDescriptor {
   // Stride (bytes) of a single cell.
   size_t cell_stride = 0;
 
-  // Number of cells per container, padded to Power of Two (pot).
-  size_t cells_per_container_pot() const;
-
   // Bytes of a single container.
   size_t container_stride = 0;
 
-  // Total number of CELLS of this SNode, NOT padded to PoT.
+  // Total number of CELLS of this SNode
   // For example, for a layout of
   // ti.root
   //   .dense(ti.ij, (3, 2))  // S1
@@ -31,9 +29,6 @@ struct SNodeDescriptor {
   // An SNode can have multiple number of components, where each component
   // starts at a fixed offset in its parent cell's memory.
   size_t mem_offset_in_parent_cell = 0;
-
-  int axis_bits_sum[taichi_max_num_indices] = {0};
-  int axis_start_bit[taichi_max_num_indices] = {0};
 
   SNode *get_child(int ch_i) const {
     return snode->ch[ch_i].get();
@@ -49,10 +44,13 @@ struct CompiledSNodeStructs {
   const SNode *root{nullptr};
   // Map from SNode ID to its descriptor.
   SNodeDescriptorsMap snode_descriptors;
+
+  // TODO: Use the new type compiler
+  // tinyir::Block *type_factory;
+  // const tinyir::Type *root_type;
 };
 
 CompiledSNodeStructs compile_snode_structs(SNode &root);
 
 }  // namespace spirv
-}  // namespace lang
-}  // namespace taichi
+}  // namespace taichi::lang

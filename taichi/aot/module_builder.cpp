@@ -1,13 +1,9 @@
 #include "taichi/aot/module_builder.h"
 #include "taichi/program/kernel.h"
 
-namespace taichi {
-namespace lang {
+namespace taichi::lang {
 
 void AotModuleBuilder::add(const std::string &identifier, Kernel *kernel) {
-  if (!kernel->lowered() && Kernel::supports_lowering(kernel->arch)) {
-    kernel->lower();
-  }
   add_per_backend(identifier, kernel);
 }
 
@@ -25,9 +21,6 @@ void AotModuleBuilder::add_field(const std::string &identifier,
 void AotModuleBuilder::add_kernel_template(const std::string &identifier,
                                            const std::string &key,
                                            Kernel *kernel) {
-  if (!kernel->lowered() && Kernel::supports_lowering(kernel->arch)) {
-    kernel->lower();
-  }
   add_per_backend_tmpl(identifier, key, kernel);
 }
 
@@ -52,5 +45,24 @@ void AotModuleBuilder::load(const std::string &output_dir) {
   TI_ERROR("Aot loader not supported");
 }
 
-}  // namespace lang
-}  // namespace taichi
+void AotModuleBuilder::dump_graph(std::string output_dir) const {
+  const std::string graph_file = fmt::format("{}/graphs.tcb", output_dir);
+  write_to_binary_file(graphs_, graph_file);
+}
+
+void AotModuleBuilder::add_graph(const std::string &name,
+                                 const aot::CompiledGraph &graph) {
+  if (graphs_.count(name) != 0) {
+    TI_ERROR("Graph {} already exists", name);
+  }
+  // Handle adding kernels separately.
+  std::unordered_map<std::string, lang::Kernel *> kernels;
+  for (const auto &dispatch : graph.dispatches) {
+    kernels[dispatch.kernel_name] = dispatch.ti_kernel;
+  }
+  for (auto &e : kernels) {
+    add(e.first, e.second);
+  }
+  graphs_[name] = graph;
+}
+}  // namespace taichi::lang

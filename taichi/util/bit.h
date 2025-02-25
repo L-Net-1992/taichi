@@ -6,8 +6,7 @@
 
 #include "taichi/common/core.h"
 
-TI_NAMESPACE_BEGIN
-
+namespace taichi {
 namespace bit {
 
 TI_FORCE_INLINE constexpr bool is_power_of_two(int32 x) {
@@ -39,7 +38,7 @@ struct Bits {
   }
 
   // Uninitialized
-  Bits(void *) {
+  explicit Bits(void *) {
   }
 
   template <int start, int bits = 1>
@@ -160,7 +159,7 @@ class Bitset {
   class reference {
    public:
     reference(std::vector<value_t> &vec, int x);
-    operator bool() const;
+    explicit operator bool() const;
     bool operator~() const;
     reference &operator=(bool x);
     reference &operator=(const reference &other);
@@ -202,5 +201,4 @@ class Bitset {
 };
 
 }  // namespace bit
-
-TI_NAMESPACE_END
+}  // namespace taichi
